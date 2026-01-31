@@ -139,7 +139,6 @@ def calculate_spherical_iou(pseudo_boxes, gt_bfov, device=None, sph_calculator=N
         ], axis=1)  # (M, 5)
         
         # 6. 计算球面 IoU，输出形状 (N, M)，与 bbox_overlaps 保持一致
-        print(f"开始计算球面IoU，共{N}个检测框和{M}个GT框")
         iou_np = np.zeros((N, M))
         for i in range(N):
             det = pseudo_boxes_with_angle[i].reshape(1, 5)
@@ -147,9 +146,6 @@ def calculate_spherical_iou(pseudo_boxes, gt_bfov, device=None, sph_calculator=N
                 gt = gt_bfov_with_angle[j].reshape(1, 5)
                 iou_value = sph_calculator.sphIoU(det, gt)[0, 0]
                 iou_np[i, j] = iou_value
-                if (i * M + j) % 1000 == 0:
-                    print(f"已计算 {i * M + j + 1}/{N * M} 个IoU值")
-        print("球面IoU计算完成")
         
         # 7. 转换回原始类型和设备
         if is_tensor:
@@ -492,11 +488,6 @@ def fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg, img_meta, stage):
             k = pps_new.shape[1]
             s = pps_new.shape[2]
             total_proposals = num_gt_i * k * s
-            # print(f"DEBUG: 第{i+1}个样本的提案生成信息:")
-            # print(f"DEBUG: num_gt[i] = {num_gt_i}")
-            # print(f"DEBUG: k (比例组合数) = {k}")
-            # print(f"DEBUG: s (1+4*S) = {s}")
-            # print(f"DEBUG: 总提案数 = {total_proposals} = {num_gt_i} * {k} * {s}")
 
 
             proposal_list.append(pps_new.reshape(-1, 4))
@@ -564,9 +555,9 @@ def calculate_spherical_iou_gpu(pseudo_boxes, gt_bfov, device=None, sph_calculat
     
     # 5. 使用 sph2pob_efficient_iou 计算 IoU
     # 由于 sph2pob_efficient_iou 支持 is_aligned=False，直接计算 (N, M) 的 IoU 矩阵
-    print(f"开始计算球面IoU (GPU)，共{N}个检测框和{M}个GT框")
+    # print(f"开始计算球面IoU (GPU)，共{N}个检测框和{M}个GT框")
     iou_tensor = sph2pob_efficient_iou(pseudo_boxes_deg, gt_bfov_deg, is_aligned=False)
-    print("球面IoU计算完成")
+    # print("球面IoU计算完成")
     
     # 6. 转换回原始类型
     if not is_tensor:
@@ -629,14 +620,7 @@ class P2BFoV(TwoStageDetector):
                       **kwargs):
 
 
-        # # 调试：检查数据输入
-        # print(f"DEBUG: forward_train gt_points形状: {gt_points.shape}")
-        # print(f"DEBUG: gt_bboxes长度: {len(gt_bboxes)}")
-        # for i, bbox in enumerate(gt_bboxes):
-        #     print(f"DEBUG: 第{i}个gt_bboxes形状: {bbox.shape}")
-        #     if bbox.numel() == 0:
-        #         print(f"DEBUG: 第{i}个图像没有目标对象！")
-        
+  
 
 
         x = self.extract_feat(img)  

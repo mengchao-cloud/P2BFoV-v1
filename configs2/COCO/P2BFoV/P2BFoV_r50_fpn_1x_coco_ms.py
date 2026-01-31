@@ -138,7 +138,7 @@ model = dict(
 # 数据集设置每个GPU的样本数
 dataset_type = 'CocoFmtDataset'  # 数据集类型为COCO格式数据集
 # data_root = '360indoor/'  # 数据根目录
-data_root = '../360indoor-short/'
+data_root = '../360indoor/'
 
 # 图像归一化配置
 img_norm_cfg = dict(
@@ -195,22 +195,22 @@ data = dict(
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/train_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/train_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=train_pipeline,  # 使用训练流水线
     ),
     val=dict(  # 验证集配置
         samples_per_gpu=1,  # 每个GPU的样本数
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/train_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/train_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline,  # 使用测试流水线
         test_mode=False,  # 不是测试模式
     ),
     test=dict(  # 测试集配置
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/test_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline))  # 使用测试流水线
 
 # 检查配置，当出现NaN时不停止

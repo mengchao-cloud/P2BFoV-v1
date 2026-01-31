@@ -1,6 +1,4 @@
 
-
-环境问题
 # Prerequisites
 install environment following
 ```shell script
@@ -37,15 +35,11 @@ cd /mnt/c/mengchao/shared/wsl/P2BFoV/P2BNet-main/TOV_mmdetection$
 python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
 
 
-
-
-今日完成gpu加速掩码生成现在正在检查iou计算是否进行gpu加速
- python compare_iou_performance.py
 查看谁在用gpu
  for g in 0 1 2 3; do echo -e "\n===== GPU $g 占用信息 ====="; nvidia-smi -i $g | awk '/^|    [0-9]+ +N\/A +N\/A/ && /python/ {pid=$5; mem=$12; cmd="ps -o user= -p " pid; cmd | getline user; close(cmd); print "用户: " user "\nPID: " pid "\n显存占用: " mem "\n---"}'; done
 
-
-#######pointobb环境，兼容mmcv1.7.2
+# 最终环境
+#兼容mmcv1.6以上，目前装的是2.3.2
 conda create -n pointobb python=3.7 -y
 conda activate pointobb
 # install pytorch
@@ -66,5 +60,11 @@ chmod +x tools/dist_train.sh
 conda install scikit-image  # or pip install scikit-image
 ```
 # 正式训练
+<!-- 单卡训练 -->
 python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
 
+<!-- 两张卡分布式训练 -->
+bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
+
+<!-- 指定gpu-id的分布式训练 -->
+CUDA_VISIBLE_DEVICES=1,2 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
