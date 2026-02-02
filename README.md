@@ -67,4 +67,13 @@ python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-d
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
 
 <!-- 指定gpu-id的分布式训练 -->
-CUDA_VISIBLE_DEVICES=1,2 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
+CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
+
+
+# 验证方法 跳过训练直接验证
+CUDA_VISIBLE_DEVICES=0 python tools/train.py \
+    configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py \
+    --work-dir work_dir/P2BFoV/ \
+    --gpu-ids 0 \
+    --cfg-options load_from=work_dir/P2BFoV/epoch_12.pth \
+    runner.max_epochs=0 evaluation.interval=1
