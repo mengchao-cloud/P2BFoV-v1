@@ -61,19 +61,52 @@ conda install scikit-image  # or pip install scikit-image
 ```
 # 正式训练
 <!-- 单卡训练 -->
-python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir ../work_dir/P2BFoV/ --gpu-ids 0
 
 <!-- 两张卡分布式训练 -->
-bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
+bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 
+
+CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
 
 <!-- 指定gpu-id的分布式训练 -->
-CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 --work-dir ../work_dir/P2BFoV/
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 
 
 
 # 验证方法 跳过训练直接验证
-CUDA_VISIBLE_DEVICES=0 python tools/train.py \
+ python tools/train.py \
     configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py \
     --work-dir work_dir/P2BFoV/ \
-    --gpu-ids 0 \
+    --gpu-ids 1 \
     --cfg-options load_from=work_dir/P2BFoV/epoch_12.pth \
     runner.max_epochs=0 evaluation.interval=1
+
+
+
+
+
+每次训练之后需要保存好训练日志、推理日志，推理结果json，配置文件以及权重文件方便后续返回分析结果
+
+temp_change里面保存的都是待测试的训练模块，到时候直接复制即可
+head0的精度为0.015目前怀疑有几处问题
+head1相较于0去掉了左右特征合并部分，添加了实例复用，大大优化了显存爆炸问题
+head2相较于1增加了球面加权的计算逻辑（后续可能考虑有关球面损失）
+head2-1相较于1增加了球面加权的计算逻辑同时添加了实例复用，大大优化了显存爆炸问题
+head3相较于2调整了掩码部分分辨率降低其显存占用
+<!-- head4相较于3需要调整尺度逻辑，将p2bnet的多尺度逻辑复原 -->
+<!-- head3相较于2需要调整特征提取部分的逻辑改bbox_extractor为mask_extractor -->
+
+# 只杀死训练相关的进程
+pkill -9 -u mengchao -f "python.*train.py"
+# 只杀死推理相关的进程
+pkill -9 -u mengchao -f "python.*test.py"
+# 查看当前 mengchao 用户的进程
+ps -u mengchao -u
+# 杀死特定进程（如果知道 PID）
+kill -9 <PID>
+
+# 1. 先查看当前进程
+ps -u mengchao -u
+# 2. 确认无误后，杀死所有进程
+pkill -9 -u mengchao
+# 3. 验证进程已被杀死
+ps -u mengchao -u

@@ -10,7 +10,7 @@ _base_ = [
 norm_cfg = dict(type='GN', num_groups=32, requires_grad=True)  # add
 
 # 调试模式开关，False表示正常训练
-debug = True
+debug = False
 
 # 模型设置
 num_stages = 2  # 模型阶段数，这里设置为2
@@ -111,7 +111,7 @@ model = dict(
             shake_ratio=[0.1],  # 抖动比例
             # base_ratios=[1, 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
             base_ratios=[1, 1.2,0.8],  # 基础长宽比
-            iou_thr=0.3,  # IOU阈值
+            iou_thr=0.01,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
         ),
         rcnn=None  # RCNN训练配置为None
@@ -202,7 +202,7 @@ data = dict(
     val=dict(  # 验证集配置
         samples_per_gpu=1,  # 每个GPU的样本数
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/train_coco.json",  # 标注文件路径
+        ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
         img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline,  # 使用测试流水线
         test_mode=False,  # 不是测试模式
@@ -231,7 +231,7 @@ lr_config = dict(
 
 # 运行器配置
 runner = dict(type='EpochBasedRunner', max_epochs=12)  # 基于epoch的运行器，最大12个epoch
-work_dir='../work_dir/P2BFoV/'  # 工作目录
+work_dir='work_dir/P2BFoV/'  # 工作目录
 
 
 
