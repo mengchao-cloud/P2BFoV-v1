@@ -286,11 +286,10 @@ class P2BFoVHead(StandardRoIHead):
         # # 在关键位置添加设备检查
         
         # 🔑 关键修改：使用不区分左右的掩码生成函数（新功能）
-        # 使用固定分辨率960x480降低显存占用
         mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
             proposals_list, 
-            erp_w=960,  # 固定宽度，降低显存占用
-            erp_h=480,  # 固定高度，降低显存占用
+            erp_w=img_shape[1],  # 宽度
+            erp_h=img_shape[0],  # 高度
             device=device
         )
         # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
@@ -338,11 +337,10 @@ class P2BFoVHead(StandardRoIHead):
             device = neg_proposal_list[0].device if neg_proposal_list else 'cpu'
             
             # 🔑 关键修改：使用不区分左右的掩码生成函数处理负样本（新功能）
-            # 使用固定分辨率960x480降低显存占用
             mask_neg_list, mask_neg_valid_list = self.generate_bfov_masks_gpu_single(
                 neg_proposal_list, 
-                erp_w=960,  # 固定宽度，降低显存占用
-                erp_h=480,  # 固定高度，降低显存占用
+                erp_w=img_shape[1],  # 宽度
+                erp_h=img_shape[0],  # 高度
                 device='cuda'
             )
             device = x[0].device
@@ -610,23 +608,26 @@ class P2BFoVHead(StandardRoIHead):
             lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
             fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
             
-            # Convert lon/lat to 3D spherical coordinates
+            # Convert lon/lat to 3D coordinates
             lon = lon_lat[:, :, 0]  # longitude in radians
             lat = lon_lat[:, :, 1]  # latitude in radians
             
-            # Spherical to 3D unit vector conversion
+            # Spherical to Cartesian conversion
             x = torch.cos(lat) * torch.cos(lon)
             y = torch.cos(lat) * torch.sin(lon)
             z = torch.sin(lat)
-            points_3d = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
+            cartesian = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
             
-            # Use spherical weighted average algorithm
-            weights_spherical = weight[:, :, 0]
-            center_3d = self.spherical_weighted_average(points_3d, weights_spherical)
+            # Weighted merge in 3D space
+            cartesian_weighted = (cartesian * weight[:, :, :3]).sum(dim=1)  # (num_gt, 3)
             
-            # 3D spherical to lon/lat conversion
-            lat_merged = torch.asin(center_3d[:, 2])  # latitude in radians
-            lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
+            # Cartesian to spherical conversion
+            # Normalize to ensure unit sphere
+            r = torch.norm(cartesian_weighted, dim=-1, keepdim=True) + 1e-8
+            cartesian_weighted = cartesian_weighted / r
+            
+            lat_merged = torch.asin(cartesian_weighted[:, 2])  # latitude in radians
+            lon_merged = torch.atan2(cartesian_weighted[:, 1], cartesian_weighted[:, 0])  # longitude in radians
             
             # Weighted merge for fovx/fovy
             fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
@@ -778,12 +779,30 @@ class P2BFoVHead(StandardRoIHead):
         # 返回融合后的边界框和动态权重
         # proposal_list：列表，长度为N,批次提案每个元素对应一张图像
         # proposal_list[i]：张量，形状[M*num_gt[i], 4]，第i张图像所有gt点生成的所有提案
-        boxes, filtered_boxes, filtered_scores = multi_apply(self.merge_box_single, cls_scores, ins_scores,
-                                                             dynamic_weight_list,
-                                                             gt_bboxes,
-                                                             gt_labels,
-                                                             proposals_list,
-                                                             img_metas, stage_)
+        
+        # 🔑 关键修改：可选择使用球面加权平均方法
+        merge_method = getattr(self, 'merge_method', 'spherical_weighted')  # 默认为球面加权
+        
+        if merge_method == 'spherical_weighted':
+            # 使用球面加权平均方法
+            boxes, filtered_boxes, filtered_scores = multi_apply(self.merge_box_spherical_weighted, 
+                                                                cls_scores, ins_scores,
+                                                                dynamic_weight_list,
+                                                                gt_bboxes,
+                                                                gt_labels,
+                                                                proposals_list,
+                                                                img_metas, stage_)
+        else:
+            # 使用原始方法
+            boxes, filtered_boxes, filtered_scores = multi_apply(self.merge_box_single, 
+                                                                cls_scores, ins_scores,
+                                                                dynamic_weight_list,
+                                                                gt_bboxes,
+                                                                gt_labels,
+                                                                proposals_list,
+                                                                img_metas, stage_)
+
+
 
         
 
@@ -940,6 +959,86 @@ class P2BFoVHead(StandardRoIHead):
                 # 如果r很小，q保持不变
         
         return q
+
+
+    def merge_box_spherical_weighted(self, cls_score, ins_score, dynamic_weight, gt_bboxes, gt_labels, proposals, img_metas, stage):
+        """
+        使用球面加权平均的提案融合函数
+        
+        Args:
+            cls_score: 分类得分，形状为 [num_gt, num_gen, num_classes]
+            ins_score: 实例得分，形状为 [num_gt, num_gen, 1]
+            dynamic_weight: 动态权重，形状为 [num_gt, num_gen]
+            gt_bboxes: 真实边界框
+            gt_labels: 真实标签
+            proposals: 提案，形状为 [num_gt, num_gen, 4] (lon, lat, fov_x, fov_y)
+            img_metas: 图像元数据
+            stage: 训练阶段
+            
+        Returns:
+            boxes: 融合后的伪GT框，形状为 [num_gt, 4]
+            filtered_boxes: 过滤后的提案，形状为 [num_gt, k, 4]
+            filtered_scores: 过滤后的得分
+        """
+        merge_mode = 'spherical_weighted_clsins_topk'
+
+        proposals = proposals.reshape(cls_score.shape[0], cls_score.shape[1], 4)
+        h, w, c = img_metas['img_shape']
+        num_gt, num_gen = proposals.shape[:2]
+
+        if merge_mode == 'spherical_weighted_clsins_topk':
+            if stage == 0:
+                k = self.topk1
+            else:
+                k = self.topk2
+            
+            # 选择top-k提案
+            dynamic_weight_, idx = dynamic_weight.topk(k=k, dim=1)
+            weight = dynamic_weight_.unsqueeze(2).repeat([1, 1, 4])
+            weight = weight / (weight.sum(dim=1, keepdim=True) + 1e-8)
+            
+            # 获取过滤后的提案
+            filtered_boxes = proposals[torch.arange(proposals.shape[0]).unsqueeze(1), idx]
+            
+            # 提取经纬度和FOV参数
+            lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
+            fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
+            
+            # 将经纬度转换为3D单位球面坐标
+            lon = lon_lat[:, :, 0]  # longitude in radians
+            lat = lon_lat[:, :, 1]  # latitude in radians
+            
+            x = torch.cos(lat) * torch.cos(lon)
+            y = torch.cos(lat) * torch.sin(lon)
+            z = torch.sin(lat)
+            points_3d = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
+            
+            # 🔑 关键改进：使用球面加权平均算法
+            weights_spherical = weight[:, :, 0]  # 使用第一个维度的权重（所有维度权重相同）
+            center_3d = self.spherical_weighted_average(points_3d, weights_spherical)
+            
+            # 将3D点转换回经纬度
+            lat_merged = torch.asin(center_3d[:, 2])  # latitude in radians
+            lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
+            
+            # FOV角度在欧氏空间加权平均（角度值）
+            fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
+            
+            # 组合成最终框
+            boxes = torch.cat([lon_merged.unsqueeze(1), lat_merged.unsqueeze(1), fovs_weighted], dim=1)
+            
+            # 添加球面坐标约束
+            lon_lat_boxes = boxes[:, :2]
+            constrained_lon_lat = self.constrain_spherical_coords(lon_lat_boxes)
+            boxes = torch.cat([constrained_lon_lat, boxes[:, 2:]], dim=1)
+
+            filtered_scores = dict(
+                cls_score=cls_score[torch.arange(proposals.shape[0]).unsqueeze(1), idx],
+                ins_score=ins_score[torch.arange(proposals.shape[0]).unsqueeze(1), idx],
+                dynamic_weight=dynamic_weight_
+            )
+            
+            return boxes, filtered_boxes, filtered_scores
 
 
     def generate_bfov_masks(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cpu'):
@@ -1499,7 +1598,7 @@ class P2BFoVHead(StandardRoIHead):
         return iou_tensor
 
 
-    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=960, erp_h=480, threshold=None, device='cuda'):
+    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
         """
         不区分左右的BFOV掩码生成函数
         使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用
@@ -1588,7 +1687,7 @@ class P2BFoVHead(StandardRoIHead):
                     masks[i, valid_Py, valid_Px] = 1
                 
                 # 🔑 关键修改：不进行左右分割，直接使用完整掩码
-                full_masks = masks
+                full_masks = masks.clone()
                 
                 # 计算掩码有效性
                 mask_valid = torch.zeros((M_i, 1), device=device)

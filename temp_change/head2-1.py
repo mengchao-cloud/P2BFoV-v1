@@ -286,11 +286,10 @@ class P2BFoVHead(StandardRoIHead):
         # # 在关键位置添加设备检查
         
         # 🔑 关键修改：使用不区分左右的掩码生成函数（新功能）
-        # 使用固定分辨率960x480降低显存占用
         mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
             proposals_list, 
-            erp_w=960,  # 固定宽度，降低显存占用
-            erp_h=480,  # 固定高度，降低显存占用
+            erp_w=img_shape[1],  # 宽度
+            erp_h=img_shape[0],  # 高度
             device=device
         )
         # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
@@ -338,11 +337,10 @@ class P2BFoVHead(StandardRoIHead):
             device = neg_proposal_list[0].device if neg_proposal_list else 'cpu'
             
             # 🔑 关键修改：使用不区分左右的掩码生成函数处理负样本（新功能）
-            # 使用固定分辨率960x480降低显存占用
             mask_neg_list, mask_neg_valid_list = self.generate_bfov_masks_gpu_single(
                 neg_proposal_list, 
-                erp_w=960,  # 固定宽度，降低显存占用
-                erp_h=480,  # 固定高度，降低显存占用
+                erp_w=img_shape[1],  # 宽度
+                erp_h=img_shape[0],  # 高度
                 device='cuda'
             )
             device = x[0].device
@@ -1499,7 +1497,7 @@ class P2BFoVHead(StandardRoIHead):
         return iou_tensor
 
 
-    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=960, erp_h=480, threshold=None, device='cuda'):
+    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
         """
         不区分左右的BFOV掩码生成函数
         使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用

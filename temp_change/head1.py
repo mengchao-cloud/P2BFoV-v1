@@ -286,11 +286,10 @@ class P2BFoVHead(StandardRoIHead):
         # # 在关键位置添加设备检查
         
         # 🔑 关键修改：使用不区分左右的掩码生成函数（新功能）
-        # 使用固定分辨率960x480降低显存占用
         mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
             proposals_list, 
-            erp_w=960,  # 固定宽度，降低显存占用
-            erp_h=480,  # 固定高度，降低显存占用
+            erp_w=img_shape[1],  # 宽度
+            erp_h=img_shape[0],  # 高度
             device=device
         )
         # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
@@ -338,11 +337,10 @@ class P2BFoVHead(StandardRoIHead):
             device = neg_proposal_list[0].device if neg_proposal_list else 'cpu'
             
             # 🔑 关键修改：使用不区分左右的掩码生成函数处理负样本（新功能）
-            # 使用固定分辨率960x480降低显存占用
             mask_neg_list, mask_neg_valid_list = self.generate_bfov_masks_gpu_single(
                 neg_proposal_list, 
-                erp_w=960,  # 固定宽度，降低显存占用
-                erp_h=480,  # 固定高度，降低显存占用
+                erp_w=img_shape[1],  # 宽度
+                erp_h=img_shape[0],  # 高度
                 device='cuda'
             )
             device = x[0].device
@@ -610,23 +608,26 @@ class P2BFoVHead(StandardRoIHead):
             lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
             fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
             
-            # Convert lon/lat to 3D spherical coordinates
+            # Convert lon/lat to 3D coordinates
             lon = lon_lat[:, :, 0]  # longitude in radians
             lat = lon_lat[:, :, 1]  # latitude in radians
             
-            # Spherical to 3D unit vector conversion
+            # Spherical to Cartesian conversion
             x = torch.cos(lat) * torch.cos(lon)
             y = torch.cos(lat) * torch.sin(lon)
             z = torch.sin(lat)
-            points_3d = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
+            cartesian = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
             
-            # Use spherical weighted average algorithm
-            weights_spherical = weight[:, :, 0]
-            center_3d = self.spherical_weighted_average(points_3d, weights_spherical)
+            # Weighted merge in 3D space
+            cartesian_weighted = (cartesian * weight[:, :, :3]).sum(dim=1)  # (num_gt, 3)
             
-            # 3D spherical to lon/lat conversion
-            lat_merged = torch.asin(center_3d[:, 2])  # latitude in radians
-            lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
+            # Cartesian to spherical conversion
+            # Normalize to ensure unit sphere
+            r = torch.norm(cartesian_weighted, dim=-1, keepdim=True) + 1e-8
+            cartesian_weighted = cartesian_weighted / r
+            
+            lat_merged = torch.asin(cartesian_weighted[:, 2])  # latitude in radians
+            lon_merged = torch.atan2(cartesian_weighted[:, 1], cartesian_weighted[:, 0])  # longitude in radians
             
             # Weighted merge for fovx/fovy
             fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
@@ -869,77 +870,6 @@ class P2BFoVHead(StandardRoIHead):
         constrained_centers[:, 0] = torch.remainder(constrained_centers[:, 0] + PI, 2 * PI) - PI
         
         return constrained_centers
-
-
-    def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
-        """
-        球面加权平均算法（A1线性收敛）
-        
-        Args:
-            points: 单位球面上的点，形状为 [batch_size, num_points, 3]
-            weights: 权重，形状为 [batch_size, num_points]
-            max_iter: 最大迭代次数
-            tol: 收敛容忍度
-            
-        Returns:
-            weighted_points: 球面加权平均点，形状为 [batch_size, 3]
-        """
-        batch_size, num_points, _ = points.shape
-        
-        # 初始化：欧氏加权归一化投影到球面
-        weighted_euclidean = torch.bmm(weights.unsqueeze(1), points).squeeze(1)  # [batch_size, 3]
-        q = weighted_euclidean / (torch.norm(weighted_euclidean, dim=1, keepdim=True) + tol)
-        
-        for iter_idx in range(max_iter):
-            # 计算每个点到当前估计点的切平面向量
-            u_total = torch.zeros_like(q)  # [batch_size, 3]
-            
-            for i in range(batch_size):
-                q_i = q[i]  # [3]
-                points_i = points[i]  # [num_points, 3]
-                weights_i = weights[i]  # [num_points]
-                
-                # 计算球面距离和切平面向量
-                dots = torch.matmul(points_i, q_i)  # [num_points]
-                dots = torch.clamp(dots, -1.0 + tol, 1.0 - tol)  # 避免数值问题
-                
-                distances = torch.arccos(dots)  # [num_points]
-                
-                # 避免除以零
-                sin_distances = torch.sin(distances)
-                valid_mask = sin_distances > tol
-                
-                # 对数映射：将点映射到切平面
-                tangent_vectors = torch.zeros_like(points_i)
-                for j in range(num_points):
-                    if valid_mask[j]:
-                        # 切平面向量 = (p - (p·q)q) * (distance / sin(distance))
-                        proj = dots[j] * q_i
-                        tangent_vector = (points_i[j] - proj) * (distances[j] / sin_distances[j])
-                        tangent_vectors[j] = tangent_vector
-                    else:
-                        # 距离很小，近似为切平面原点
-                        tangent_vectors[j] = torch.zeros_like(q_i)
-                
-                # 切平面加权平均
-                u_i = torch.sum(weights_i.unsqueeze(1) * tangent_vectors, dim=0)  # [3]
-                u_total[i] = u_i
-            
-            # 检查收敛
-            u_norm = torch.norm(u_total, dim=1)
-            if torch.all(u_norm < tol):
-                break
-            
-            # 指数映射：更新估计点
-            for i in range(batch_size):
-                u_i = u_total[i]
-                r = torch.norm(u_i)
-                if r > tol:
-                    # exp_q(u) = q * cos(r) + (u/r) * sin(r)
-                    q[i] = q[i] * torch.cos(r) + (u_i / r) * torch.sin(r)
-                # 如果r很小，q保持不变
-        
-        return q
 
 
     def generate_bfov_masks(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cpu'):
@@ -1499,7 +1429,7 @@ class P2BFoVHead(StandardRoIHead):
         return iou_tensor
 
 
-    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=960, erp_h=480, threshold=None, device='cuda'):
+    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
         """
         不区分左右的BFOV掩码生成函数
         使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用

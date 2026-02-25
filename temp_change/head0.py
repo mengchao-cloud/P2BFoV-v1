@@ -285,41 +285,34 @@ class P2BFoVHead(StandardRoIHead):
         # 修复：从列表第一个元素获取设备
         # # 在关键位置添加设备检查
         
-        # 🔑 关键修改：使用不区分左右的掩码生成函数（新功能）
-        # 使用固定分辨率960x480降低显存占用
-        mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
+        mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list = self.generate_bfov_masks_gpu(
             proposals_list, 
-            erp_w=960,  # 固定宽度，降低显存占用
-            erp_h=480,  # 固定高度，降低显存占用
+            erp_w=img_shape[1],  # 宽度
+            erp_h=img_shape[0],  # 高度
             device=device
         )
-        # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
+        #  mask_left_list, mask_right_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
 
-        # 1. 将掩码转换为边界框列表
-        # mask_list掩码是列表格式长度为N，每个元素是numpy数组，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
+        # 1. 将左右掩码转换为边界框列表
+        #  mask_left_list, mask_right_list掩码是列表格式长度为N，每个元素是numpy数组，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
+        # 获取设备信息device = proposal_list_base[0].device if proposal_list_base else 'cpu'
         # 调用masks_to_bboxes生成边界框，确保设备一致
-        # bboxes_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
-        bboxes_list = self.masks_to_bboxes(mask_list, device=device)
-        
-        # 获取特征roi（不再区分左右）
-        # rois: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
-        rois = bbox2roi(bboxes_list)
+        # bboxes_left_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
+        # bboxes_right_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
+        bboxes_left_list = self.masks_to_bboxes(mask_left_list, device=device)
+        bboxes_right_list = self.masks_to_bboxes(mask_right_list, device=device)
+        # 获取左右区域的特征roi
+        # rois_left: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
+        # rois_right: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
+        rois_left = bbox2roi(bboxes_left_list)
+        rois_right = bbox2roi(bboxes_right_list)
 
-        # 🔑 关键修改：调用_bbox_forward_single函数（新功能）
-        bbox_results = self._bbox_forward_single(x, rois, gt_points, stage, mask_list, mask_valid_list)
 
-        # 原有代码（注释掉，保留作为参考）
-        # mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list = self.generate_bfov_masks_gpu(
-        #     proposals_list, 
-        #     erp_w=img_shape[1],  # 宽度
-        #     erp_h=img_shape[0],  # 高度
-        #     device=device
-        # )
-        # bboxes_left_list = self.masks_to_bboxes(mask_left_list, device=device)
-        # bboxes_right_list = self.masks_to_bboxes(mask_right_list, device=device)
-        # rois_left = bbox2roi(bboxes_left_list)
-        # rois_right = bbox2roi(bboxes_right_list)
-        # bbox_results = self._bbox_forward(x, rois_left, rois_right, gt_points, stage, mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list)
+
+
+        # bbox_results = dict(cls_score=cls_score, ins_score=ins_score, bbox_pred=reg_box, bbox_feats=bbox_feats, num_instance=num_gt)
+        #每个候选提案的类别得分实例得分以及特征都被计算出来
+        bbox_results = self._bbox_forward(x, rois_left, rois_right, gt_points, stage, mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list)
 
 
         #获取批次中真实目标的总数num_gt
@@ -336,40 +329,21 @@ class P2BFoVHead(StandardRoIHead):
             # neg_proposal_list最终形状为[N, num_neg_gen, 4]
             # neg_weight_list最终形状为[N, num_neg_gen, 1]
             device = neg_proposal_list[0].device if neg_proposal_list else 'cpu'
-            
-            # 🔑 关键修改：使用不区分左右的掩码生成函数处理负样本（新功能）
-            # 使用固定分辨率960x480降低显存占用
-            mask_neg_list, mask_neg_valid_list = self.generate_bfov_masks_gpu_single(
+            mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list = self.generate_bfov_masks_gpu(
                 neg_proposal_list, 
-                erp_w=960,  # 固定宽度，降低显存占用
-                erp_h=480,  # 固定高度，降低显存占用
+                erp_w=img_shape[1],  # 宽度
+                erp_h=img_shape[0],  # 高度
                 device='cuda'
             )
             device = x[0].device
-            neg_bboxes_list = self.masks_to_bboxes(mask_neg_list, device=device)
-            neg_rois = bbox2roi(neg_bboxes_list)
-            
-            # 🔑 关键修改：使用新的_bbox_forward_single函数处理负样本（新功能）
-            neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage, mask_neg_list, mask_neg_valid_list)
+            neg_bboxes_left_list = self.masks_to_bboxes(mask_neg_left_list, device=device)
+            neg_bboxes_right_list = self.masks_to_bboxes(mask_neg_right_list, device=device)
+            neg_rois_left = bbox2roi(neg_bboxes_left_list)
+            neg_rois_right = bbox2roi(neg_bboxes_right_list)    
+            neg_bbox_results = self._bbox_forward(x, neg_rois_left, neg_rois_right, None, stage, mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list)
 
             neg_cls_scores = neg_bbox_results['cls_score']
             neg_weights = torch.cat(neg_weight_list)
-            
-            # 原有代码（注释掉，保留作为参考）
-            # mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list = self.generate_bfov_masks_gpu(
-            #     neg_proposal_list, 
-            #     erp_w=img_shape[1],  # 宽度
-            #     erp_h=img_shape[0],  # 高度
-            #     device='cuda'
-            # )
-            # device = x[0].device
-            # neg_bboxes_left_list = self.masks_to_bboxes(mask_neg_left_list, device=device)
-            # neg_bboxes_right_list = self.masks_to_bboxes(mask_neg_right_list, device=device)
-            # neg_rois_left = bbox2roi(neg_bboxes_left_list)
-            # neg_rois_right = bbox2roi(neg_bboxes_right_list)    
-            # neg_bbox_results = self._bbox_forward(x, neg_rois_left, neg_rois_right, None, stage, mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list)
-            # neg_cls_scores = neg_bbox_results['cls_score']
-            # neg_weights = torch.cat(neg_weight_list)
 
         else:
             neg_cls_scores = None
@@ -531,59 +505,6 @@ class P2BFoVHead(StandardRoIHead):
         
 
 
-    def _bbox_forward_single(self, x, rois, gt_points, stage, mask_list, mask_valid_list=None):
-        """
-        不区分左右的Box head forward函数
-        
-        Args:
-            x: 特征图列表
-            rois: ROI信息，形状为 [sum(num_gt[i]*M), 5]，[batch_ind, x1, y1, x2, y2]
-            gt_points: 标注点列表，长度为N
-            stage: 训练阶段
-            mask_list: 掩码列表，每个元素是形状为 [M_i, H, W] 的张量
-            mask_valid_list: 掩码有效性列表，每个元素形状为 [M_i, 1]
-            
-        Returns:
-            bbox_results: 包含分类得分、实例得分、回归框等的字典
-        """
-        # 提取ROI特征
-        bbox_feats = self.bbox_roi_extractor(
-            x[:self.bbox_roi_extractor.num_inputs], rois)
-        
-        # 🔑 关键修改：应用单掩码到特征
-        bbox_mask_feats = self.apply_mask_to_features(bbox_feats, mask_list, rois, mask_valid_list)
-        
-        # 不再需要左右特征合并，直接使用单掩码过滤后的特征
-        if self.with_shared_head:
-            bbox_mask_feats = self.shared_head(bbox_mask_feats)
-        
-        # 分类和回归
-        cls_score, ins_score, reg_box = self.bbox_head(bbox_mask_feats, stage)
-
-        # positive sample
-        if gt_points is not None:
-            if isinstance(gt_points, (list, tuple)):
-                num_gt = torch.cat(gt_points).shape[0]
-            else:
-                num_gt = gt_points.shape[0] if gt_points.ndim > 0 else 0
-            
-            assert num_gt != 0, f'num_gt = 0 {gt_points}'
-
-            cls_score = cls_score.view(num_gt, -1, cls_score.shape[-1])
-            ins_score = ins_score.view(num_gt, -1, ins_score.shape[-1])
-            if reg_box is not None:
-                reg_box = reg_box.view(num_gt, -1, reg_box.shape[-1])
-
-            bbox_results = dict(
-                cls_score=cls_score, ins_score=ins_score, bbox_pred=reg_box, bbox_feats=bbox_mask_feats, num_instance=num_gt)
-            return bbox_results
-        # negative sample
-        else:
-            bbox_results = dict(
-                cls_score=cls_score, ins_score=ins_score, bbox_pred=reg_box, bbox_feats=bbox_mask_feats, num_instance=None)
-            return bbox_results
-
-
     def merge_box_single(self, cls_score, ins_score, dynamic_weight, gt_bboxes, gt_labels, proposals, img_metas, stage):
 
         # 直接设置merge_mode，移除冗余条件判断
@@ -610,23 +531,26 @@ class P2BFoVHead(StandardRoIHead):
             lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
             fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
             
-            # Convert lon/lat to 3D spherical coordinates
+            # Convert lon/lat to 3D coordinates
             lon = lon_lat[:, :, 0]  # longitude in radians
             lat = lon_lat[:, :, 1]  # latitude in radians
             
-            # Spherical to 3D unit vector conversion
+            # Spherical to Cartesian conversion
             x = torch.cos(lat) * torch.cos(lon)
             y = torch.cos(lat) * torch.sin(lon)
             z = torch.sin(lat)
-            points_3d = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
+            cartesian = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
             
-            # Use spherical weighted average algorithm
-            weights_spherical = weight[:, :, 0]
-            center_3d = self.spherical_weighted_average(points_3d, weights_spherical)
+            # Weighted merge in 3D space
+            cartesian_weighted = (cartesian * weight[:, :, :3]).sum(dim=1)  # (num_gt, 3)
             
-            # 3D spherical to lon/lat conversion
-            lat_merged = torch.asin(center_3d[:, 2])  # latitude in radians
-            lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
+            # Cartesian to spherical conversion
+            # Normalize to ensure unit sphere
+            r = torch.norm(cartesian_weighted, dim=-1, keepdim=True) + 1e-8
+            cartesian_weighted = cartesian_weighted / r
+            
+            lat_merged = torch.asin(cartesian_weighted[:, 2])  # latitude in radians
+            lon_merged = torch.atan2(cartesian_weighted[:, 1], cartesian_weighted[:, 0])  # longitude in radians
             
             # Weighted merge for fovx/fovy
             fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
@@ -869,77 +793,6 @@ class P2BFoVHead(StandardRoIHead):
         constrained_centers[:, 0] = torch.remainder(constrained_centers[:, 0] + PI, 2 * PI) - PI
         
         return constrained_centers
-
-
-    def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
-        """
-        球面加权平均算法（A1线性收敛）
-        
-        Args:
-            points: 单位球面上的点，形状为 [batch_size, num_points, 3]
-            weights: 权重，形状为 [batch_size, num_points]
-            max_iter: 最大迭代次数
-            tol: 收敛容忍度
-            
-        Returns:
-            weighted_points: 球面加权平均点，形状为 [batch_size, 3]
-        """
-        batch_size, num_points, _ = points.shape
-        
-        # 初始化：欧氏加权归一化投影到球面
-        weighted_euclidean = torch.bmm(weights.unsqueeze(1), points).squeeze(1)  # [batch_size, 3]
-        q = weighted_euclidean / (torch.norm(weighted_euclidean, dim=1, keepdim=True) + tol)
-        
-        for iter_idx in range(max_iter):
-            # 计算每个点到当前估计点的切平面向量
-            u_total = torch.zeros_like(q)  # [batch_size, 3]
-            
-            for i in range(batch_size):
-                q_i = q[i]  # [3]
-                points_i = points[i]  # [num_points, 3]
-                weights_i = weights[i]  # [num_points]
-                
-                # 计算球面距离和切平面向量
-                dots = torch.matmul(points_i, q_i)  # [num_points]
-                dots = torch.clamp(dots, -1.0 + tol, 1.0 - tol)  # 避免数值问题
-                
-                distances = torch.arccos(dots)  # [num_points]
-                
-                # 避免除以零
-                sin_distances = torch.sin(distances)
-                valid_mask = sin_distances > tol
-                
-                # 对数映射：将点映射到切平面
-                tangent_vectors = torch.zeros_like(points_i)
-                for j in range(num_points):
-                    if valid_mask[j]:
-                        # 切平面向量 = (p - (p·q)q) * (distance / sin(distance))
-                        proj = dots[j] * q_i
-                        tangent_vector = (points_i[j] - proj) * (distances[j] / sin_distances[j])
-                        tangent_vectors[j] = tangent_vector
-                    else:
-                        # 距离很小，近似为切平面原点
-                        tangent_vectors[j] = torch.zeros_like(q_i)
-                
-                # 切平面加权平均
-                u_i = torch.sum(weights_i.unsqueeze(1) * tangent_vectors, dim=0)  # [3]
-                u_total[i] = u_i
-            
-            # 检查收敛
-            u_norm = torch.norm(u_total, dim=1)
-            if torch.all(u_norm < tol):
-                break
-            
-            # 指数映射：更新估计点
-            for i in range(batch_size):
-                u_i = u_total[i]
-                r = torch.norm(u_i)
-                if r > tol:
-                    # exp_q(u) = q * cos(r) + (u/r) * sin(r)
-                    q[i] = q[i] * torch.cos(r) + (u_i / r) * torch.sin(r)
-                # 如果r很小，q保持不变
-        
-        return q
 
 
     def generate_bfov_masks(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cpu'):
@@ -1281,7 +1134,7 @@ class P2BFoVHead(StandardRoIHead):
     def generate_bfov_masks_gpu(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
         """
         GPU加速版本的BFOV掩码生成函数
-        使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用
+        与P2BFoV_head.py中的函数格式一致
         
         参数:
         bfov_list: 长度为N的列表，每个元素是一个形状为[M_i,4]（弧度制）的张量
@@ -1297,17 +1150,10 @@ class P2BFoVHead(StandardRoIHead):
         mask_left_valid_list: 左侧掩码有效性列表，每个元素形状为[M_i, 1]，0表示全零掩码
         mask_right_valid_list: 右侧掩码有效性列表，每个元素形状为[M_i, 1]，0表示全零掩码
         """
+        # self.save_batch_to_file(bfov_list, 'bfovlist.txt')
         # 使用默认分割阈值（图像宽度的一半）
         if threshold is None:
             threshold = erp_w // 2
-        
-        # 导入复用版本的GPUImageRecorder
-        try:
-            from PANDORA.PRDA.lib.ReuseGPUImageRecorder import ReuseGPUImageRecorder
-        except ImportError as e:
-            print(f"导入ReuseGPUImageRecorder失败: {e}")
-            # 如果导入失败，回退到原始版本
-            from PANDORA.PRDA.lib.GPUImageRecorder import GPUImageRecorder
         
         # 处理列表输入
         if isinstance(bfov_list, list):
@@ -1325,15 +1171,8 @@ class P2BFoVHead(StandardRoIHead):
                 # 获取当前GT的BFOV数量
                 M_i = gt_bfovs.shape[0]
                 
-                # 初始化当前GT的掩码张量 [M_i, H, W] - 使用bool类型节省显存
+                # 初始化当前GT的掩码张量 [M_i, H, W] - 优化：使用更内存高效的dtype
                 masks = torch.zeros((M_i, erp_h, erp_w), dtype=torch.bool, device=device)
-                
-                # 🔑 关键优化：创建单个ReuseGPUImageRecorder实例用于当前GT
-                try:
-                    gpu_recorder = ReuseGPUImageRecorder(erp_w, erp_h, device=device)
-                except NameError:
-                    # 如果ReuseGPUImageRecorder不可用，使用原始GPUImageRecorder
-                    gpu_recorder = None
                 
                 # 批量处理当前GT的所有BFOV
                 for i in range(M_i):
@@ -1345,22 +1184,15 @@ class P2BFoVHead(StandardRoIHead):
                     if fov_y < 0 or fov_y > np.pi:
                         raise ValueError(f"Invalid fov_y value: {fov_y}. Must be between 0 and pi.")
                     
+                    # 创建GPUImageRecorder实例
                     # 注意：这里的fov_x和fov_y是弧度制，需要转换为角度制
                     fov_x_deg = np.degrees(fov_x)
                     fov_y_deg = np.degrees(fov_y)
                     
-                    if gpu_recorder is not None and isinstance(gpu_recorder, ReuseGPUImageRecorder):
-                        # 🔑 关键优化：通过属性更新复用GPUImageRecorder实例
-                        gpu_recorder.view_angle_w = fov_x_deg
-                        gpu_recorder.view_angle_h = fov_y_deg
-                        gpu_recorder.long_side = erp_w
-                        
-                        # 生成采样点（使用复用的实例）
-                        Px, Py = gpu_recorder._sample_points(lon, lat, border_only=False)
-                    else:
-                        # 回退到原始逻辑：为每个BFOV创建新实例
-                        gpu_recorder = GPUImageRecorder(erp_w, erp_h, view_angle_w=fov_x_deg, view_angle_h=fov_y_deg, long_side=erp_w, device=device)
-                        Px, Py = gpu_recorder._sample_points(lon, lat, border_only=False)
+                    gpu_recorder = GPUImageRecorder(erp_w, erp_h, view_angle_w=fov_x_deg, view_angle_h=fov_y_deg, long_side=erp_w, device=device)
+                    
+                    # 生成采样点
+                    Px, Py = gpu_recorder._sample_points(lon, lat, border_only=False)
                     
                     # 将采样点坐标转换为整数
                     Px = Px.to(torch.int32)
@@ -1497,118 +1329,6 @@ class P2BFoVHead(StandardRoIHead):
         
         
         return iou_tensor
-
-
-    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=960, erp_h=480, threshold=None, device='cuda'):
-        """
-        不区分左右的BFOV掩码生成函数
-        使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用
-        
-        参数:
-        bfov_list: 长度为N的列表，每个元素是一个形状为[M_i,4]（弧度制）的张量
-                每个BFOV参数: [longitude, latitude, fov_x, fov_y]
-        erp_w: ERP图像宽度
-        erp_h: ERP图像高度
-        threshold: 分割阈值（不使用，为保持接口一致而保留）
-        device: 计算设备，默认为'cuda'
-        
-        返回:
-        mask_list: 掩码列表，每个元素形状为[M_i, H, W]
-        mask_valid_list: 掩码有效性列表，每个元素形状为[M_i, 1]，0表示全零掩码
-        """
-        # 导入复用版本的GPUImageRecorder
-        try:
-            from PANDORA.PRDA.lib.ReuseGPUImageRecorder import ReuseGPUImageRecorder
-        except ImportError as e:
-            print(f"导入ReuseGPUImageRecorder失败: {e}")
-            # 如果导入失败，回退到原始版本
-            from PANDORA.PRDA.lib.GPUImageRecorder import GPUImageRecorder
-        
-        # 处理列表输入
-        if isinstance(bfov_list, list):
-            mask_list = []
-            mask_valid_list = []
-            
-            # 遍历每个GT
-            for gt_idx, gt_bfovs in enumerate(bfov_list):
-                # 确保张量在指定设备上
-                if not gt_bfovs.is_cuda:
-                    gt_bfovs = gt_bfovs.to(device)
-                
-                # 获取当前GT的BFOV数量
-                M_i = gt_bfovs.shape[0]
-                
-                # 初始化当前GT的掩码张量 [M_i, H, W] - 使用bool类型节省显存
-                masks = torch.zeros((M_i, erp_h, erp_w), dtype=torch.bool, device=device)
-                
-                # 🔑 关键优化：创建单个ReuseGPUImageRecorder实例用于当前GT
-                try:
-                    gpu_recorder = ReuseGPUImageRecorder(erp_w, erp_h, device=device)
-                except NameError:
-                    # 如果ReuseGPUImageRecorder不可用，使用原始GPUImageRecorder
-                    gpu_recorder = None
-                
-                # 批量处理当前GT的所有BFOV
-                for i in range(M_i):
-                    # 获取当前BFOV参数
-                    lon, lat, fov_x, fov_y = gt_bfovs[i].tolist()
-                    # 检查fov_x和fov_y是否在0到pi之间
-                    if fov_x < 0 or fov_x > np.pi:
-                        raise ValueError(f"Invalid fov_x value: {fov_x}. Must be between 0 and pi.")
-                    if fov_y < 0 or fov_y > np.pi:
-                        raise ValueError(f"Invalid fov_y value: {fov_y}. Must be between 0 and pi.")
-                    
-                    # 注意：这里的fov_x和fov_y是弧度制，需要转换为角度制
-                    fov_x_deg = np.degrees(fov_x)
-                    fov_y_deg = np.degrees(fov_y)
-                    
-                    if gpu_recorder is not None and isinstance(gpu_recorder, ReuseGPUImageRecorder):
-                        # 🔑 关键优化：通过属性更新复用GPUImageRecorder实例
-                        gpu_recorder.view_angle_w = fov_x_deg
-                        gpu_recorder.view_angle_h = fov_y_deg
-                        gpu_recorder.long_side = erp_w
-                        
-                        # 生成采样点（使用复用的实例）
-                        Px, Py = gpu_recorder._sample_points(lon, lat, border_only=False)
-                    else:
-                        # 回退到原始逻辑：为每个BFOV创建新实例
-                        gpu_recorder = GPUImageRecorder(erp_w, erp_h, view_angle_w=fov_x_deg, view_angle_h=fov_y_deg, long_side=erp_w, device=device)
-                        Px, Py = gpu_recorder._sample_points(lon, lat, border_only=False)
-                    
-                    # 将采样点坐标转换为整数
-                    Px = Px.to(torch.int32)
-                    Py = Py.to(torch.int32)
-                    
-                    # 确保坐标在有效范围内
-                    valid_mask = (Px >= 0) & (Px < erp_w) & (Py >= 0) & (Py < erp_h)
-                    valid_Px = Px[valid_mask].to(torch.long)
-                    valid_Py = Py[valid_mask].to(torch.long)
-                    
-                    # 将有效采样点标记为1
-                    masks[i, valid_Py, valid_Px] = 1
-                
-                # 🔑 关键修改：不进行左右分割，直接使用完整掩码
-                full_masks = masks
-                
-                # 计算掩码有效性
-                mask_valid = torch.zeros((M_i, 1), device=device)
-                for i in range(M_i):
-                    # 检查掩码是否有非零元素
-                    if torch.any(full_masks[i]):
-                        mask_valid[i] = 1.0
-                    else:
-                        # 全0掩码，释放显存
-                        full_masks[i].fill_(False)
-                
-                # 将当前GT的掩码和有效性标识添加到结果列表
-                mask_list.append(full_masks)
-                mask_valid_list.append(mask_valid)
-            
-            return mask_list, mask_valid_list
-        
-        else:
-            # 处理张量输入（如果需要）
-            raise NotImplementedError("张量输入暂未实现")
 
 
     

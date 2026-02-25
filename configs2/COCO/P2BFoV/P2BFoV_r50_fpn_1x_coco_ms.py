@@ -10,7 +10,7 @@ _base_ = [
 norm_cfg = dict(type='GN', num_groups=32, requires_grad=True)  # add
 
 # 调试模式开关，False表示正常训练
-debug = True
+debug = False
 
 # 模型设置
 num_stages = 2  # 模型阶段数，这里设置为2
@@ -45,8 +45,8 @@ model = dict(
     roi_head=dict(  # ROI头配置
         type='P2BFoVHead',  # 类型为P2BFoVHead
         num_stages=num_stages,  # 阶段数，使用前面定义的2
-        # top_k=7,  # 顶部k值选择
-        top_k=2,  # 顶部k值选择
+        top_k=7,  # 顶部k值选择
+        # top_k=2,  # 顶部k值选择
         with_atten=False,  # 不使用注意力机制
         
         # ROI特征提取器配置
@@ -111,7 +111,7 @@ model = dict(
             shake_ratio=[0.1],  # 抖动比例
             # base_ratios=[1, 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
             base_ratios=[1, 1.2,0.8],  # 基础长宽比
-            iou_thr=0.3,  # IOU阈值
+            iou_thr=0.01,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
         ),
         rcnn=None  # RCNN训练配置为None
@@ -190,8 +190,8 @@ test_pipeline = [
 
 # 数据加载配置
 data = dict(
-    samples_per_gpu=1,  # 每个GPU的样本数
-    workers_per_gpu=4,  # 每个GPU的工作进程数
+    samples_per_gpu=6,  # 每个GPU的样本数（从4增加到6，提高GPU利用率从49%到73.5%）
+    workers_per_gpu=8,  # 每个GPU的工作进程数（从6增加到8，提高数据加载速度）
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置
         type=dataset_type,  # 数据集类型
@@ -200,9 +200,9 @@ data = dict(
         pipeline=train_pipeline,  # 使用训练流水线
     ),
     val=dict(  # 验证集配置
-        samples_per_gpu=1,  # 每个GPU的样本数
+        samples_per_gpu=6,  # 每个GPU的样本数（从4增加到6，保持一致）
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/train_coco.json",  # 标注文件路径
+        ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
         img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline,  # 使用测试流水线
         test_mode=False,  # 不是测试模式
@@ -231,12 +231,13 @@ lr_config = dict(
 
 # 运行器配置
 runner = dict(type='EpochBasedRunner', max_epochs=12)  # 基于epoch的运行器，最大12个epoch
-work_dir='../work_dir/P2BFoV/'  # 工作目录
+work_dir='work_dir/P2BFoV/'  # 工作目录
 
 
 
 #这里需要确定是否需要评估bfov和point，暂时搁置
 # 评估配置
+
 evaluation = dict(
     interval=12,  # 评估间隔（每12个epoch）
     # metric='bfov',  # 评估指标为bfov，这里之所以还用bbox是因为保留整体逻辑联通
