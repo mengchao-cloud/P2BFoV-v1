@@ -281,6 +281,7 @@ def gen_negative_proposals(gt_points, proposal_cfg, aug_generate_proposals, img_
         return None, None
     neg_proposal_list = []
     neg_weight_list = []
+    # 遍历批次内的所有图片
     for i in range(len(gt_points)):
         # aug_generate_proposals上一阶段生成的正样本提案
         # pos_box是张量 [num_gt[i] * k * (1+4*S), 4]
@@ -307,7 +308,7 @@ def gen_negative_proposals(gt_points, proposal_cfg, aug_generate_proposals, img_
         # 3. 拼接负提案并转移到目标设备
         # neg_bboxes是张量 [num_neg_gen, 4]
         neg_bboxes = torch.stack([center_x, center_y, w, h], dim=1).to(gt_points[0].device)
-
+        # iou维度是[num_neg_gen, num_pos]
         iou = calculate_spherical_iou_gpu(neg_bboxes, pos_box)
 
         # [num_neg_gen, num_pos] （布尔值张量）类似有效性掩码
@@ -642,6 +643,10 @@ class P2BFoV(TwoStageDetector):
 
                 generate_proposals, proposals_valid_list = gen_proposals_from_cfg(gt_points, base_proposal_cfg,
                                                                                   img_meta=img_metas)
+                
+
+
+
                 # 生成一个与真实标签数量相同的张量存储初始权重为1
                 dynamic_weight = torch.cat(gt_labels).new_ones(len(torch.cat(gt_labels)))
                 # 阶段0暂时不生成负提案和负提案的权重
@@ -649,11 +654,7 @@ class P2BFoV(TwoStageDetector):
                 # 下一阶段的伪提案
                 #generate_proposals长度为N列表，每个元素是一个张量，形状为[num_gt[i]*M, 4]
                 pseudo_boxes = generate_proposals
-
-
-
-
-                    
+      
             else:
                 #  'pseudo_boxes': list[torch.Tensor], 长度为N, 每个元素形状: [num_gt[i], 4], 数据类型: float32， 伪真实框列表，用于下一阶段训练
                 # proposal_list,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
@@ -661,6 +662,7 @@ class P2BFoV(TwoStageDetector):
                 generate_proposals, proposals_valid_list = fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg,
                                                                                    img_meta=img_metas,
                                                                                    stage=stage)
+
                 # 生成负提案及其权重
                 # generate_proposals,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
                 # neg_proposal_list最终形状为[N, num_neg_gen, 4]
@@ -721,5 +723,8 @@ class P2BFoV(TwoStageDetector):
 
 
         #bbox_results ：嵌套列表，外层长度为N，中层长度为num_classes，最内层每个元素是一个张量，形状为[num_gt[i], 5]，5个值是： [x1, y1, w, h, score]
+        
 
+
+        
         return test_result

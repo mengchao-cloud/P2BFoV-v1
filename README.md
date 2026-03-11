@@ -61,7 +61,7 @@ conda install scikit-image  # or pip install scikit-image
 ```
 # 正式训练
 <!-- 单卡训练 -->
-python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir ../work_dir/P2BFoV/ --gpu-ids 0
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
 
 <!-- 两张卡分布式训练 -->
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 

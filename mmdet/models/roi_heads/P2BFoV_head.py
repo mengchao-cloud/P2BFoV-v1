@@ -17,6 +17,9 @@ import os
 import sys
 from sphdet.iou.sph2pob_efficient import sph2pob_efficient
 
+# 导入MaskToBox类
+from mask_to_box import MaskToBox
+
 from PANDORA.PRDA.lib.GPUImageRecorder import GPUImageRecorder
 from PANDORA.RoIoU.calculate_RoIoU import Sph
 if hasattr(torch, 'pi'):
@@ -142,21 +145,21 @@ class P2BFoVHead(StandardRoIHead):
             #             'mean_ious':          # torch.Tensor, 数据类型: float32
             #                                   # 总平均IoU
             #             's':                  # torch.Tensor, 数据类型: float32
-            #                                   # 小尺度IoU均值（视场角乘积 < 1²）
+            #                                   # 小尺度IoU均值（视场角乘积 < 0.5²）
             #             'm':                  # torch.Tensor, 数据类型: float32
-            #                                   # 中尺度IoU均值（1² < 视场角乘积 < 2²）
+            #                                   # 中尺度IoU均值（0.5² < 视场角乘积 < 1²）
             #             'l':                  # torch.Tensor, 数据类型: float32
-            #                                   # 大尺度IoU均值（2² < 视场角乘积 < 3²）
+            #                                   # 大尺度IoU均值（1² < 视场角乘积 < 2²）
             #             'h':                  # torch.Tensor, 数据类型: float32
-            #                                   # 超大尺度IoU均值（视场角乘积 > 3²）
+            #                                   # 超大尺度IoU均值（视场角乘积 > 2²）
             #         }
             # }
 
 
 
-    def masks_to_bboxes(self, mask_list, device=None):
+    def masks_to_bboxes(self, mask_list, device='cuda'):
         """
-        更高效的GPU批量掩码到边界框转换（使用非零坐标）
+        使用mask_to_box.py中的MaskToBox类对掩码进行一系列处理后生成边界框
         
         Args:
             mask_list: 掩码列表，每个元素是形状为 [M, H, W] 的PyTorch张量
@@ -165,34 +168,20 @@ class P2BFoVHead(StandardRoIHead):
         Returns:
             bboxes_list: 边界框列表
         """
-      
+        # 初始化MaskToBox实例
+        mask_to_box = MaskToBox()
+        
         bboxes_list = []
         
         for masks in mask_list:
             masks = masks.to(device)
-            M, H, W = masks.shape
             
-            # 批量处理所有掩码
-            bboxes = torch.zeros((M, 4), device=device)
+            # 调用MaskToBox类对掩码进行一系列处理后生成边界框
+            # 预处理包括：厚度计算、过滤、填充连通区域、保留最大连通区域
+            bboxes = mask_to_box(masks, preprocess=True)
             
-            for i in range(M):
-                mask = masks[i]
-                # 找到非零像素的坐标
-                nonzero_coords = torch.nonzero(mask > 0)
-                
-                if len(nonzero_coords) > 0:
-                    # 计算边界框
-                    y_coords = nonzero_coords[:, 0]
-                    x_coords = nonzero_coords[:, 1]
-                    
-                    y_min = y_coords.min()
-                    y_max = y_coords.max()
-                    x_min = x_coords.min()
-                    x_max = x_coords.max()
-                    
-                    bboxes[i] = torch.tensor([x_min, y_min, x_max, y_max], device=device)
-                else:
-                    bboxes[i] = torch.tensor([0, 0, 0, 0], device=device)
+            # 确保边界框是float类型，因为ROI提取器期望的是float类型的坐标
+            bboxes = bboxes.float()
             
             bboxes_list.append(bboxes)
         
@@ -200,72 +189,8 @@ class P2BFoVHead(StandardRoIHead):
        
 
 
-    def apply_mask_to_features(self, features, masks, rois, featmap_strides=None, validity_list=None):
-        """将原始掩码应用到提取的特征上
-        
-        Args:
-            features: 提取的ROI特征，形状为 [N, C, H_feat, W_feat]
-            masks: 掩码列表，每个元素是PyTorch张量，形状为 [M_i, H_ori, W_ori]
-            rois: ROI信息，形状为 [N, 5]，[batch_ind, x1, y1, x2, y2]
-            featmap_strides: 特征图步长列表，默认None（未使用）
-            validity_list: 掩码有效性列表，每个元素是PyTorch张量，形状为 [M_i, 1]，0表示无效掩码
-        
-        Returns:
-            masked_features: 掩码过滤后的特征，形状与输入相同 [N, C, H_feat, W_feat]
-        """
-        import torch.nn.functional as F
-        
-    
-        # 复制原始特征
-        masked_features = features.clone()
-        N, C, H_feat, W_feat = features.shape
-        
-        # 统计信息
-        valid_masks_applied = 0
-        invalid_indices = 0
-        empty_masks = 0
-        
-        for i in range(N):
-            # 获取当前ROI信息
-            roi = rois[i]
-            batch_ind = int(roi[0].item())  # 图像索引
-            
-            # 计算当前ROI对应的掩码索引
-            prev_masks = sum([m.shape[0] for m in masks[:batch_ind]]) if batch_ind > 0 else 0
-            mask_idx_in_rois = i - prev_masks
-          
-            
-            # 直接获取掩码张量
-            original_mask = masks[batch_ind][mask_idx_in_rois]  # 形状 [H_ori, W_ori]
-            
-            # 确保掩码在正确的设备上
-            if original_mask.device != features.device:
-                original_mask = original_mask.to(features.device)
-            
-            # 将掩码下采样到特征图大小
-            feat_mask = F.interpolate(
-                original_mask.unsqueeze(0).unsqueeze(0).float(),  # 扩展为 [1,1,H_ori,W_ori]
-                size=(H_feat, W_feat),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze(0).squeeze(0)  # 恢复为 [H_feat, W_feat]
-            
-            # 二值化处理
-            feat_mask = (feat_mask > 0.5).float()
-            
-            # 静默处理全0掩码（这是正常的）
-            mask_sum = feat_mask.sum()
-            if mask_sum <= 0:
-                empty_masks += 1
-                # 全0掩码是正常的，保持原始特征，不输出警告
-                continue
-            
-            # 应用掩码到特征上（只有非全0掩码才执行）
-            masked_features[i] = features[i] * feat_mask.unsqueeze(0)  # 广播到所有通道
-            valid_masks_applied += 1
-        
-    
-        return masked_features
+
+ 
     def _bbox_forward_train(self, x, proposal_list_base, proposals_list, proposals_valid_list, neg_proposal_list,
                             neg_weight_list, gt_points,
                             gt_labels,
@@ -279,17 +204,16 @@ class P2BFoVHead(StandardRoIHead):
 
 
 
-        ###在这里才开始使用掩码
-        img_shape = img_metas[0]['img_shape']  # 获取实际图像尺寸
+
         device = proposals_list[0].device if proposals_list else 'cpu'        
         # 修复：从列表第一个元素获取设备
         # # 在关键位置添加设备检查
         
         # 🔑 关键修改：使用不区分左右的掩码生成函数（新功能）
+        # 使用固定分辨率960x480降低显存占用
         mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
             proposals_list, 
-            erp_w=img_shape[1],  # 宽度
-            erp_h=img_shape[0],  # 高度
+            img_metas,  # 图像元数据，包含图像尺寸等信息
             device=device
         )
         # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
@@ -298,6 +222,7 @@ class P2BFoVHead(StandardRoIHead):
         # mask_list掩码是列表格式长度为N，每个元素是numpy数组，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
         # 调用masks_to_bboxes生成边界框，确保设备一致
         # bboxes_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
+        #这一部分是主体保留关键需要改动的
         bboxes_list = self.masks_to_bboxes(mask_list, device=device)
         
         # 获取特征roi（不再区分左右）
@@ -305,20 +230,8 @@ class P2BFoVHead(StandardRoIHead):
         rois = bbox2roi(bboxes_list)
 
         # 🔑 关键修改：调用_bbox_forward_single函数（新功能）
-        bbox_results = self._bbox_forward_single(x, rois, gt_points, stage, mask_list, mask_valid_list)
+        bbox_results = self._bbox_forward_single(x, rois, gt_points, stage)
 
-        # 原有代码（注释掉，保留作为参考）
-        # mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list = self.generate_bfov_masks_gpu(
-        #     proposals_list, 
-        #     erp_w=img_shape[1],  # 宽度
-        #     erp_h=img_shape[0],  # 高度
-        #     device=device
-        # )
-        # bboxes_left_list = self.masks_to_bboxes(mask_left_list, device=device)
-        # bboxes_right_list = self.masks_to_bboxes(mask_right_list, device=device)
-        # rois_left = bbox2roi(bboxes_left_list)
-        # rois_right = bbox2roi(bboxes_right_list)
-        # bbox_results = self._bbox_forward(x, rois_left, rois_right, gt_points, stage, mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list)
 
 
         #获取批次中真实目标的总数num_gt
@@ -337,10 +250,10 @@ class P2BFoVHead(StandardRoIHead):
             device = neg_proposal_list[0].device if neg_proposal_list else 'cpu'
             
             # 🔑 关键修改：使用不区分左右的掩码生成函数处理负样本（新功能）
+            # 使用固定分辨率960x480降低显存占用
             mask_neg_list, mask_neg_valid_list = self.generate_bfov_masks_gpu_single(
                 neg_proposal_list, 
-                erp_w=img_shape[1],  # 宽度
-                erp_h=img_shape[0],  # 高度
+                img_metas,  # 固定高度，降低显存占用
                 device='cuda'
             )
             device = x[0].device
@@ -348,26 +261,11 @@ class P2BFoVHead(StandardRoIHead):
             neg_rois = bbox2roi(neg_bboxes_list)
             
             # 🔑 关键修改：使用新的_bbox_forward_single函数处理负样本（新功能）
-            neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage, mask_neg_list, mask_neg_valid_list)
+            neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage)
 
             neg_cls_scores = neg_bbox_results['cls_score']
             neg_weights = torch.cat(neg_weight_list)
             
-            # 原有代码（注释掉，保留作为参考）
-            # mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list = self.generate_bfov_masks_gpu(
-            #     neg_proposal_list, 
-            #     erp_w=img_shape[1],  # 宽度
-            #     erp_h=img_shape[0],  # 高度
-            #     device='cuda'
-            # )
-            # device = x[0].device
-            # neg_bboxes_left_list = self.masks_to_bboxes(mask_neg_left_list, device=device)
-            # neg_bboxes_right_list = self.masks_to_bboxes(mask_neg_right_list, device=device)
-            # neg_rois_left = bbox2roi(neg_bboxes_left_list)
-            # neg_rois_right = bbox2roi(neg_bboxes_right_list)    
-            # neg_bbox_results = self._bbox_forward(x, neg_rois_left, neg_rois_right, None, stage, mask_neg_left_list, mask_neg_right_list, mask_neg_left_valid_list, mask_neg_right_valid_list)
-            # neg_cls_scores = neg_bbox_results['cls_score']
-            # neg_weights = torch.cat(neg_weight_list)
 
         else:
             neg_cls_scores = None
@@ -470,66 +368,10 @@ class P2BFoVHead(StandardRoIHead):
         
         
 
-    def _bbox_forward(self, x, rois_left, rois_right, gt_points, stage, mask_left_list, mask_right_list, mask_left_valid_list=None, mask_right_valid_list=None):
-        """Box head forward function used in both training and testing."""
-        # gt_points:列表，长度为N，批次数据每个元素对应一张图像
-        # gt_points[i]:张量，形状[num_gt_i, 2]，第 i 张图像的标注点，2表示(x, y)坐标
-        # TODO: a more flexible way to decide which feature maps to use
-        # rois_left: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
-        # rois_right: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
-        # bbox_left_feats: 是张量[sum(M_i), C, H_roi, W_roi]，C是通道数，H_roi是特征图高度，W_roi是特征图宽度
-        # bbox_right_feats: 是张量[sum(M_i), C, H_roi, W_roi]，C是通道数，H_roi是特征图高度，W_roi是特征图宽度
-        bbox_left_feats = self.bbox_roi_extractor(
-            x[:self.bbox_roi_extractor.num_inputs], rois_left)
-        bbox_right_feats = self.bbox_roi_extractor(
-            x[:self.bbox_roi_extractor.num_inputs], rois_right)
-        
-        #  mask_left_list, mask_right_list掩码是列表格式长度为N，每个元素是numpy数组，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
-        # bbox_mask_left_feats: 是张量[sum(M_i), C, H_roi, W_roi]，C是通道数，H_roi是特征图高度，W_roi是特征图宽度
-        # bbox_mask_right_feats: 是张量[sum(M_i), C, H_roi, W_roi]，C是通道数，H_roi是特征图高度，W_roi是特征图宽度
-        bbox_mask_left_feats = self.apply_mask_to_features(bbox_left_feats, mask_left_list, rois_left, mask_left_valid_list)
-        bbox_mask_right_feats = self.apply_mask_to_features(bbox_right_feats, mask_right_list, rois_right, mask_right_valid_list)
-
-        # 左右区域的特征合并
-        bbox_feats = bbox_mask_left_feats + bbox_mask_right_feats
-
-        if self.with_shared_head:
-            bbox_feats = self.shared_head(bbox_feats)
-        # 到这里得分部分就算结束了
-        
-        cls_score, ins_score, reg_box = self.bbox_head(bbox_feats, stage)
-
-        # positive sample
-        if gt_points is not None:
-            # num_gt = torch.cat(gt_points).shape[0]
-            
-            if isinstance(gt_points, (list, tuple)):
-                num_gt = torch.cat(gt_points).shape[0]
-            else:
-                # 如果是单个张量，直接获取第一个维度
-                num_gt = gt_points.shape[0] if gt_points.ndim > 0 else 0
 
 
-            
-            assert num_gt != 0, f'num_gt = 0 {gt_points}'
 
-            cls_score = cls_score.view(num_gt, -1, cls_score.shape[-1])
-            ins_score = ins_score.view(num_gt, -1, ins_score.shape[-1])
-            if reg_box is not None:
-                reg_box = reg_box.view(num_gt, -1, reg_box.shape[-1])
-
-            bbox_results = dict(
-                cls_score=cls_score, ins_score=ins_score, bbox_pred=reg_box, bbox_feats=bbox_feats, num_instance=num_gt)
-            return bbox_results
-        # negative sample
-        else:
-            bbox_results = dict(
-                cls_score=cls_score, ins_score=ins_score, bbox_pred=reg_box, bbox_feats=bbox_feats, num_instance=None)
-            return bbox_results
-        
-
-
-    def _bbox_forward_single(self, x, rois, gt_points, stage, mask_list, mask_valid_list=None):
+    def _bbox_forward_single(self, x, rois, gt_points, stage):
         """
         不区分左右的Box head forward函数
         
@@ -547,10 +389,10 @@ class P2BFoVHead(StandardRoIHead):
         # 提取ROI特征
         bbox_feats = self.bbox_roi_extractor(
             x[:self.bbox_roi_extractor.num_inputs], rois)
-        
-        # 🔑 关键修改：应用单掩码到特征
-        bbox_mask_feats = self.apply_mask_to_features(bbox_feats, mask_list, rois, mask_valid_list)
-        
+        #不再进行掩码过滤处理
+        # # 🔑 关键修改：应用单掩码到特征
+        # bbox_mask_feats = self.apply_mask_to_features(bbox_feats, mask_list, rois, mask_valid_list)
+        bbox_mask_feats = bbox_feats
         # 不再需要左右特征合并，直接使用单掩码过滤后的特征
         if self.with_shared_head:
             bbox_mask_feats = self.shared_head(bbox_mask_feats)
@@ -608,26 +450,23 @@ class P2BFoVHead(StandardRoIHead):
             lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
             fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
             
-            # Convert lon/lat to 3D coordinates
+            # Convert lon/lat to 3D spherical coordinates
             lon = lon_lat[:, :, 0]  # longitude in radians
             lat = lon_lat[:, :, 1]  # latitude in radians
             
-            # Spherical to Cartesian conversion
+            # Spherical to 3D unit vector conversion
             x = torch.cos(lat) * torch.cos(lon)
             y = torch.cos(lat) * torch.sin(lon)
             z = torch.sin(lat)
-            cartesian = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
+            points_3d = torch.stack([x, y, z], dim=-1)  # (num_gt, k, 3)
             
-            # Weighted merge in 3D space
-            cartesian_weighted = (cartesian * weight[:, :, :3]).sum(dim=1)  # (num_gt, 3)
+            # Use spherical weighted average algorithm
+            weights_spherical = weight[:, :, 0]
+            center_3d = self.spherical_weighted_average(points_3d, weights_spherical)
             
-            # Cartesian to spherical conversion
-            # Normalize to ensure unit sphere
-            r = torch.norm(cartesian_weighted, dim=-1, keepdim=True) + 1e-8
-            cartesian_weighted = cartesian_weighted / r
-            
-            lat_merged = torch.asin(cartesian_weighted[:, 2])  # latitude in radians
-            lon_merged = torch.atan2(cartesian_weighted[:, 1], cartesian_weighted[:, 0])  # longitude in radians
+            # 3D spherical to lon/lat conversion
+            lat_merged = torch.asin(center_3d[:, 2])  # latitude in radians
+            lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
             
             # Weighted merge for fovx/fovy
             fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
@@ -657,95 +496,6 @@ class P2BFoVHead(StandardRoIHead):
 
 
 
-    def calculate_spherical_iou(self, pseudo_boxes, gt_bfov, device=None, sph_calculator=None):
-        """
-        计算球面矩形 IoU，替代原有的平面 IoU 计算
-        支持无角度的球面矩形：[theta, phi, fov_x, fov_y]
-        
-        Args:
-            pseudo_boxes: 伪框，格式：
-                - 形状：(N, 4)
-                - 格式：[theta, phi, fov_x, fov_y]
-                - 类型：torch.Tensor 或 numpy.ndarray
-            gt_bfov: 真实框，格式：
-                - 形状：(N, 4)
-                - 格式：[theta, phi, fov_x, fov_y]
-                - 类型：torch.Tensor 或 numpy.ndarray
-            device: 输出设备，默认与 pseudo_boxes 相同
-            sph_calculator: Sph 实例，默认自动创建
-            
-        Returns:
-            iou1: 球面 IoU 结果，形状：(N,)，与 bbox_overlaps(..., is_aligned=True) 保持一致
-                - 类型：与 pseudo_boxes 相同（torch.Tensor 或 numpy.ndarray）
-                - 设备：与 device 参数或 pseudo_boxes 相同
-        """
-        # 1. 创建 Sph 实例（如果未提供）
-        if sph_calculator is None:
-            sph_calculator = Sph()
-        
-        # 2. 处理 gt_bfov 输入格式
-        if isinstance(gt_bfov, list):
-            # 列表 → 合并为张量
-            gt_bfov = torch.cat(gt_bfov)
-        
-        # 3. 处理设备和数据类型
-        is_tensor = isinstance(pseudo_boxes, torch.Tensor)
-        if is_tensor:
-            if device is None:
-                device = pseudo_boxes.device
-            # 转换为 numpy 数组处理
-            pseudo_boxes_np = pseudo_boxes.detach().cpu().numpy()
-            gt_bfov_np = gt_bfov.detach().cpu().numpy()
-        else:
-            # 已为 numpy 数组
-            pseudo_boxes_np = pseudo_boxes
-            gt_bfov_np = gt_bfov
-            if device is not None:
-                print("Warning: device parameter is ignored for numpy input")
-        
-        # 4. 验证输入形状是否匹配（对齐计算）
-        assert pseudo_boxes_np.shape == gt_bfov_np.shape, \
-            f"pseudo_boxes shape {pseudo_boxes_np.shape} must match gt_bfov shape {gt_bfov_np.shape} for aligned calculation"
-        assert len(pseudo_boxes_np.shape) == 2, \
-            f"Input must be 2D tensors, got {len(pseudo_boxes_np.shape)}D tensors"
-        
-        # 5. 添加角度维度：角度为0，形状变为 (N, 5)
-        # dets 和 gt 格式：[theta, phi, fov_x, fov_y, angle]
-        pseudo_boxes_with_angle = np.concatenate([
-            pseudo_boxes_np, 
-            np.zeros((pseudo_boxes_np.shape[0], 1))  # 添加角度，全部为0
-        ], axis=1)  # (N, 5)
-        
-        gt_bfov_with_angle = np.concatenate([
-            gt_bfov_np, 
-            np.zeros((gt_bfov_np.shape[0], 1))  # 添加角度，全部为0
-        ], axis=1)  # (N, 5)
-        
-        # 6. 计算球面 IoU（对齐计算）
-        # 使用for循环逐个计算，避免内存溢出
-        N = pseudo_boxes_with_angle.shape[0]
-        iou_list = []
-        for i, (det, gt) in enumerate(zip(pseudo_boxes_with_angle, gt_bfov_with_angle)):
-            # 调用 sphIoU 计算单个框对的 IoU
-            det_reshaped = det.reshape(1, 5)
-            gt_reshaped = gt.reshape(1, 5)
-            iou_value = sph_calculator.sphIoU(det_reshaped, gt_reshaped)[0, 0]
-            iou_list.append(iou_value)
-        
-        # 7. 转换为 numpy 数组（一维）
-        iou_np = np.array(iou_list)  # (N,)
-
-
-
-
-
-
-        # 8. 转换回原始类型和设备
-        if is_tensor:
-            iou_np = torch.from_numpy(iou_np).to(device)
-
-                 
-        return iou_np
 
     def merge_box(self, bbox_results, proposals_list, proposals_valid_list, gt_labels, gt_bboxes, gt_bfov, img_metas, stage):
         cls_scores = bbox_results['cls_score']
@@ -803,6 +553,7 @@ class P2BFoVHead(StandardRoIHead):
         # iou1的形状是[sum(num_gt[i]),]，每个元素都是0-1之间的浮点数，代表球面IoU
         iou1 = self.calculate_spherical_iou_gpu(pseudo_boxes, temp_gt_bfov)
         
+        
 
 
 
@@ -817,7 +568,7 @@ class P2BFoVHead(StandardRoIHead):
 
         mean_ious_all = iou1.mean()
         
-        mean_ious = [mean_iou_s, mean_iou_m, mean_iou_l, mean_iou_h]
+        mean_ious = [mean_iou_s, mean_iou_m, mean_iou_l, mean_iou_h,mean_ious_all]
 
         if self.test_mean_iou and stage == 1:
             self.sum_iou += iou1.sum()
@@ -872,176 +623,37 @@ class P2BFoVHead(StandardRoIHead):
         return constrained_centers
 
 
-    def generate_bfov_masks(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cpu'):
+    def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
         """
-        批量生成BFOV掩码列表，并将每个掩码分为左右两部分
+        三维笛卡尔加权平均算法
         
-        参数:
-        bfov_list: BFOV参数列表
-                - 类型1: 列表，长度为N（批次大小），每个元素是张量，形状为 [M_i, 4]，其中 M_i = num_gt_i * M
-                - 类型2: 形状为 [N, M, 4] 的numpy数组或PyTorch张量
-                N表示图像数量，M表示每个gt的bfov数量（固定）
-                num_gt_i表示第i张图像的gt数量（不固定）
-                4表示每个bfov的参数(经度,纬度,水平视场,竖直视场)，输入已经是弧度制
-        erp_w: ERP图像宽度
-        erp_h: ERP图像高度
-        threshold: 分割阈值，默认使用图像宽度的一半
-        device: 计算设备，'cuda'或'cpu'，默认为'cpu'
-        
-        返回:
-        mask_left_list: 左侧掩码列表，长度为N
-                        每个元素是numpy数组，形状为 [M_i, H, W]，其中 M_i = num_gt_i * M
-        mask_right_list: 右侧掩码列表，长度为N
-                        每个元素是numpy数组，形状为 [M_i, H, W]，其中 M_i = num_gt_i * M
-                        H, W: 图像高度和宽度
+        Args:
+            points: 3D点，形状为 [batch_size, num_points, 3]
+            weights: 权重，形状为 [batch_size, num_points]
+            max_iter: 最大迭代次数（兼容旧接口，不再使用）
+            tol: 收敛容忍度（兼容旧接口，不再使用）
+            
+        Returns:
+            weighted_points: 笛卡尔加权平均点，形状为 [batch_size, 3]
         """
-            
-
+        batch_size, num_points, _ = points.shape
         
-        try:
-            # 使用默认分割阈值（图像宽度的一半）
-            if threshold is None:
-                threshold = erp_w // 2
-            
-            # 预先创建ImageRecorder实例，提高性能
-            BFoV = ImageRecorder(erp_w, erp_h, view_angle_w=1.0, view_angle_h=1.0, long_side=erp_w)
-            
-            # 处理列表输入（每个元素对应一张图像）
-            if isinstance(bfov_list, list):
-                mask_left_list = []
-                mask_right_list = []
-                
-                # 遍历每张图像
-                for img_bfov in bfov_list:
-                    # 单张图像的bfov：张量，形状为 [M_i, 4]，其中 M_i = num_gt_i * M
-                    assert isinstance(img_bfov, torch.Tensor), "列表元素必须是PyTorch张量"
-                    assert img_bfov.ndim == 2, f"列表元素形状应为 [M_i, 4]，当前形状：{img_bfov.shape}"
-                    assert img_bfov.shape[-1] == 4, f"列表元素最后一维应为4，当前：{img_bfov.shape[-1]}"
-                    
-                    M_i = img_bfov.shape[0]  # 第i张图像的总提案数
-                    
-                    # 预分配单张图像的掩码张量 [M_i, H, W]，在CPU上创建
-                    left_mask = torch.zeros((M_i, erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                    right_mask = torch.zeros((M_i, erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                    
-                    # 转换为CPU张量
-                    img_bfov_cpu = img_bfov.cpu()
-                    
-                    # 遍历单张图像的所有提案
-                    for j in range(M_i):
-                        # 提取当前bfov的参数（已经是弧度制）
-                        bfov_params = img_bfov_cpu[j]
-                        longitude, latitude, fov_x, fov_y = bfov_params
-                        center_x_rad = longitude  # 输入已经是弧度制，无需转换
-                        center_y_rad = latitude   # 输入已经是弧度制，无需转换
-                        angle = 0  # 旋转角为0
-                        
-                        # 复用ImageRecorder实例，只更新必要的参数
-                        BFoV.view_angle_w = fov_x
-                        BFoV.view_angle_h = fov_y
-                        
-                        # 获取BFOV区域内的所有采样点（直接使用弧度制输入）
-                        Px, Py = BFoV._sample_points(center_x_rad.item(), center_y_rad.item(), border_only=False)
-                        
-                        # 将采样点坐标转换为整数并保持在CPU上
-                        Px = torch.tensor(Px, dtype=torch.int32, device='cpu')
-                        Py = torch.tensor(Py, dtype=torch.int32, device='cpu')
-                        
-                        # 确保坐标在有效范围内
-                        valid_mask = (Px >= 0) & (Px < erp_w) & (Py >= 0) & (Py < erp_h)
-                        valid_Px = Px[valid_mask]
-                        valid_Py = Py[valid_mask]
+        # 直接进行三维笛卡尔加权平均
+        # 将权重扩展为 [batch_size, num_points, 1] 以便与 points 相乘
+        weights_expanded = weights.unsqueeze(2)
+        
+        # 计算加权和
+        weighted_sum = torch.sum(weights_expanded * points, dim=1)  # [batch_size, 3]
+        
+        # 计算权重总和（用于归一化）
+        weights_sum = weights.sum(dim=1, keepdim=True)  # [batch_size, 1]
+        
+        # 进行归一化，避免除以零
+        weighted_average = weighted_sum / (weights_sum + tol)  # [batch_size, 3]
+        
+        return weighted_average
 
-                        valid_Px = valid_Px.long()  # 转换为int64
-                        valid_Py = valid_Py.long()  # 转换为int64
-                        
-                        # 创建临时掩码，在CPU上创建
-                        temp_mask = torch.zeros((erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                        temp_mask[valid_Py, valid_Px] = 1
-                        
-                        # 分割为左右掩码并赋值到批量张量
-                        left_mask[j] = temp_mask.clone()
-                        left_mask[j, :, threshold:] = 0
-                        
-                        right_mask[j] = temp_mask.clone()
-                        right_mask[j, :, :threshold] = 0
-                    
-                    # 转换为numpy数组并添加到结果列表
-                    mask_left_list.append(left_mask.cpu().numpy())
-                    mask_right_list.append(right_mask.cpu().numpy())
-                
-                return mask_left_list, mask_right_list
-            
-            # 处理numpy数组或PyTorch张量输入
-            else:
-                assert isinstance(bfov_list, (torch.Tensor, np.ndarray)), "输入必须是numpy数组、PyTorch张量或列表"
-                assert bfov_list.ndim == 3, f"输入形状应为 [N, M, 4]，当前形状：{bfov_list.shape}"
-                assert bfov_list.shape[-1] == 4, f"输入最后一维应为4，当前：{bfov_list.shape[-1]}"
-                
-                N, M, _ = bfov_list.shape
-                
-                # 将计算移至CPU，避免频繁数据传输
-                if isinstance(bfov_list, np.ndarray):
-                    bfov_tensor = torch.tensor(bfov_list, dtype=torch.float32, device='cpu')
-                else:
-                    bfov_tensor = bfov_list.cpu()
-                
-                # 预分配掩码张量 [N, M, H, W]，在CPU上创建
-                left_masks = torch.zeros((N, M, erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                right_masks = torch.zeros((N, M, erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                
-                # 遍历所有gt和bfov（批量处理）
-                for i in range(N):
-                    for j in range(M):
-                        # 提取当前bfov的参数（已经是弧度制）
-                        bfov_params = bfov_tensor[i, j]
-                        longitude, latitude, fov_x, fov_y = bfov_params
-                        center_x_rad = longitude  # 输入已经是弧度制，无需转换
-                        center_y_rad = latitude   # 输入已经是弧度制，无需转换
-                        angle = 0  # 旋转角为0
-                        
-                        # 复用ImageRecorder实例，只更新必要的参数
-                        BFoV.view_angle_w = fov_x
-                        BFoV.view_angle_h = fov_y
-                        
-                        # 获取BFOV区域内的所有采样点（直接使用弧度制输入）
-                        Px, Py = BFoV._sample_points(center_x_rad.item(), center_y_rad.item(), border_only=False)
-                        
-                        # 将采样点坐标转换为整数并保持在CPU上
-                        Px = torch.tensor(Px, dtype=torch.int32, device='cpu')
-                        Py = torch.tensor(Py, dtype=torch.int32, device='cpu')
-                        
-                        # 确保坐标在有效范围内
-                        valid_mask = (Px >= 0) & (Px < erp_w) & (Py >= 0) & (Py < erp_h)
-                        valid_Px = Px[valid_mask]
-                        valid_Py = Py[valid_mask]
-                        
-                        # 创建临时掩码，在CPU上创建
-                        temp_mask = torch.zeros((erp_h, erp_w), dtype=torch.uint8, device='cpu')
-                        temp_mask[valid_Py, valid_Px] = 1
-                        
-                        # 分割为左右掩码并赋值到批量张量
-                        left_masks[i, j] = temp_mask.clone()
-                        left_masks[i, j, :, threshold:] = 0
-                        
-                        right_masks[i, j] = temp_mask.clone()
-                        right_masks[i, j, :, :threshold] = 0
-                
-                # 转换为numpy数组列表
-                left_masks_np = left_masks.cpu().numpy()
-                right_masks_np = right_masks.cpu().numpy()
-                
-                # 转换为列表形式
-                mask_left_list = [left_masks_np[i] for i in range(N)]
-                mask_right_list = [right_masks_np[i] for i in range(N)]
-                
-                return mask_left_list, mask_right_list
-        except Exception as e:
-            print(f"掩码生成错误: {e}")
-            import traceback
-            traceback.print_exc()
-            # 返回默认值
-            return [], []
+
 
     def simple_test(self,
                     stage,
@@ -1071,6 +683,8 @@ class P2BFoVHead(StandardRoIHead):
         ]
         # pseudo_bboxes = [i[:, :4] for i in det_bboxes]
         #bbox_results ：嵌套列表，外层长度为N，中层长度为num_classes，最内层每个元素是一个张量，形状为[num_gt[i], 5]，5个值是： [x1, y1, x2, y2, score]
+       
+        
         return bbox_results, pseudo_bboxes
     def simple_test_bboxes(self,
                             x,
@@ -1093,35 +707,48 @@ class P2BFoVHead(StandardRoIHead):
 
 
         device = proposals[0].device if proposals else 'cpu'
-        mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list = self.generate_bfov_masks_gpu(
+        # 使用generate_bfov_masks_gpu_single替代generate_bfov_masks_gpu
+        mask_list, mask_valid_list = self.generate_bfov_masks_gpu_single(
             proposals, 
-            erp_w=img_shapes[0][1],  # 宽度
-            erp_h=img_shapes[0][0],  # 高度
-            device='cuda'
+            img_metas,  
+            device=device
         )
-        #  mask_left_list, mask_right_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
+        # mask_list掩码是列表格式长度为N，每个元素是一个张量，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
 
-        # 1. 将左右掩码转换为边界框列表
-        #  mask_left_list, mask_right_list掩码是列表格式长度为N，每个元素是numpy数组，形状为[num_gt[i]*M, H, W]，N是批量大小，H是高度，W是宽度
-        # 获取设备信息device = proposal_list_base[0].device if proposal_list_base else 'cpu'
-        # 调用masks_to_bboxes生成边界框，确保设备一致
-        # bboxes_left_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
-        # bboxes_right_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
-        bboxes_left_list = self.masks_to_bboxes(mask_left_list, device=device)
-        bboxes_right_list = self.masks_to_bboxes(mask_right_list, device=device)
-        # 获取左右区域的特征roi
-        # rois_left: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
-        # rois_right: 是张量[sum(num_gt[i]*M), 5]，M是每个gt点对应的的提案数量，5代表[batch_ind, x1, y1, x2, y2]
-        rois_left = bbox2roi(bboxes_left_list)
-        rois_right = bbox2roi(bboxes_right_list)
+        # 将掩码转换为边界框列表
+        bboxes_list = self.masks_to_bboxes(mask_list, device=device)
+        # 获取ROI特征
+        rois = bbox2roi(bboxes_list)
 
-
-        #  def _bbox_forward(self, x, rois_left, rois_right, gt_points, stage,mask_left_list,mask_right_list):
-
-        bbox_results = self._bbox_forward(x, rois_left, rois_right, gt_bboxes, stage, mask_left_list, mask_right_list, mask_left_valid_list, mask_right_valid_list)
-
-
-        proposals_valid_list = torch.cat(proposals_valid_list).reshape(
+        # 由于_bbox_forward需要左右分开的参数，我们将相同的掩码和ROI分别传递给左右参数
+        bbox_results = self._bbox_forward_single(x, rois, None, stage)
+        
+        # 在测试阶段，我们需要将cls_score和ins_score重塑为 [num_gt, M, num_classes] 形状
+        # 首先计算每个图像的gt数量
+        num_gts = [len(bbox) for bbox in gt_bboxes]
+        num_proposals = [len(bfov) for bfov in proposals]
+        
+        # 重塑cls_score和ins_score
+        cls_score = bbox_results['cls_score'].split(num_proposals, dim=0)
+        ins_score = bbox_results['ins_score'].split(num_proposals, dim=0)
+        
+        # 计算每个gt对应的提案数量
+        M = num_proposals[0] // num_gts[0]
+        
+        # 重塑为 [num_gt, M, num_classes] 形状
+        cls_score = [score.view(num_gt, M, -1) for score, num_gt in zip(cls_score, num_gts)]
+        ins_score = [score.view(num_gt, M, -1) for score, num_gt in zip(ins_score, num_gts)]
+        
+        # 合并为张量
+        bbox_results['cls_score'] = torch.cat(cls_score, dim=0)
+        bbox_results['ins_score'] = torch.cat(ins_score, dim=0)
+        
+        # 设置num_instance
+        bbox_results['num_instance'] = sum(num_gts)
+        
+        # 在测试阶段，我们使用mask_valid_list而不是proposals_valid_list
+        # 因为mask_valid_list与生成的掩码一一对应
+        valid_list = torch.cat(mask_valid_list).reshape(
             *bbox_results['cls_score'].shape[:2], 1)
         # def merge_box(self, bbox_results, proposals_list, proposals_valid_list, gt_labels, gt_bboxes, gt_bfov, img_metas, stage):
         #返回的数据信息
@@ -1131,18 +758,22 @@ class P2BFoVHead(StandardRoIHead):
         # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k]   
         pseudo_boxes, mean_ious, filtered_boxes, filtered_scores, dynamic_weight = self.merge_box(bbox_results,
                                                                                                     proposals,
-                                                                                                    proposals_valid_list,
+                                                                                                    valid_list,
                                                                                                     torch.cat(gt_labels),
                                                                                                     gt_bboxes,
                                                                                                     gt_bfov,
                                                                                                     img_metas, stage)
         # pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
         pseudo_boxes_out = copy.deepcopy(pseudo_boxes)
+       
+        
         # - det_bboxes ： [N, num_gt[i], 6] 6个值是： [bfov参数(4) + 置信度权重(1) + 标注ID(1)]
         # - det_labels ： [N, num_gt[i]] → 检测框对应的标签
         det_bboxes, det_labels = self.pseudobox_to_result(pseudo_boxes, gt_labels, dynamic_weight, gt_anns_id,
                                                             scale_factors, rescale)
-        return det_bboxes, det_labels, pseudo_boxes_out
+        
+        
+        return det_bboxes, det_labels, pseudo_boxes_out  
 
     def pseudobox_to_result(self, pseudo_boxes, gt_labels, dynamic_weight, gt_anns_id, scale_factors, rescale):
         # pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，
@@ -1154,12 +785,12 @@ class P2BFoVHead(StandardRoIHead):
         for i in range(len(pseudo_boxes)):
             boxes = pseudo_boxes[i]
             labels = gt_labels[i]
-
-            if rescale and boxes.shape[0] > 0:
-                scale_factor = boxes.new_tensor(scale_factors[i]).unsqueeze(0).repeat(
-                    1,
-                    boxes.size(-1) // 4)
-                boxes /= scale_factor
+            #这里他妈的该死的缩放，把结果全弄乱了
+            # if rescale and boxes.shape[0] > 0:
+            #     scale_factor = boxes.new_tensor(scale_factors[i]).unsqueeze(0).repeat(
+            #         1,
+            #         boxes.size(-1) // 4)
+            #     boxes /= scale_factor
 
             boxes = torch.cat([boxes, dynamic_weight[i].sum(dim=1, keepdim=True)], dim=1)
             gt_anns_id_single = gt_anns_id[i]
@@ -1168,46 +799,10 @@ class P2BFoVHead(StandardRoIHead):
             det_labels.append(labels)
                 # - det_bboxes ： [N, num_gt[i], 6] 6个值是： [bfov参数(4) + 置信度权重(1) + 标注ID(1)]
                 # - det_labels ： [N, num_gt[i]] → 检测框对应的标签
+        
         return det_bboxes, det_labels
 ##gpu加速掩码生成
-    def save_batch_to_file(self, batch_data, file_name='batch_data.txt', save_dir='/home/mengchao/workspace/P2BFoV/P2BNet-main/TOV_mmdetection/bfov/test'):
-        """
-        将批次数据保存到txt文件，以便后续单独测试
-        
-        参数:
-        batch_data: 批次数据，应为列表形式，每个元素是张量
-        file_name: 保存的文件名
-        save_dir: 保存目录
-        
-        返回:
-        file_path: 保存的文件路径
-        """
-        import os
-        import numpy as np
-        
-        # 确保保存目录存在
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 构建文件路径
-        file_path = os.path.join(save_dir, file_name)
-        
-        # 写入批次数据到文件
-        with open(file_path, 'w') as f:
-            # # 写入批次数据长度
-            # f.write(f"{len(batch_data)}\n")
-            
-            # 写入每个张量数据
-            for i, tensor in enumerate(batch_data):
-                # 转换为CPU numpy数组
-                tensor_np = tensor.cpu().numpy()
-                # # 写入张量形状
-                # f.write(f"{tensor_np.shape[0]} {tensor_np.shape[1]}\n")
-                # 写入张量值
-                for row in tensor_np:
-                    f.write(' '.join(map(str, row)) + '\n')
-        
-        print(f"批次数据已保存到: {file_path}")
-        return file_path
+   
     def generate_bfov_masks_gpu(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
         """
         GPU加速版本的BFOV掩码生成函数
@@ -1429,7 +1024,7 @@ class P2BFoVHead(StandardRoIHead):
         return iou_tensor
 
 
-    def generate_bfov_masks_gpu_single(self, bfov_list, erp_w=1920, erp_h=960, threshold=None, device='cuda'):
+    def generate_bfov_masks_gpu_single(self, bfov_list, img_metas, threshold=None, device='cuda'):
         """
         不区分左右的BFOV掩码生成函数
         使用ReuseGPUImageRecorder实现实例复用，大幅降低显存占用
@@ -1446,6 +1041,7 @@ class P2BFoVHead(StandardRoIHead):
         mask_list: 掩码列表，每个元素形状为[M_i, H, W]
         mask_valid_list: 掩码有效性列表，每个元素形状为[M_i, 1]，0表示全零掩码
         """
+        erp_h,erp_w = img_metas[0]['img_shape'][0],img_metas[0]['img_shape'][1]
         # 导入复用版本的GPUImageRecorder
         try:
             from PANDORA.PRDA.lib.ReuseGPUImageRecorder import ReuseGPUImageRecorder
@@ -1518,7 +1114,7 @@ class P2BFoVHead(StandardRoIHead):
                     masks[i, valid_Py, valid_Px] = 1
                 
                 # 🔑 关键修改：不进行左右分割，直接使用完整掩码
-                full_masks = masks.clone()
+                full_masks = masks
                 
                 # 计算掩码有效性
                 mask_valid = torch.zeros((M_i, 1), device=device)

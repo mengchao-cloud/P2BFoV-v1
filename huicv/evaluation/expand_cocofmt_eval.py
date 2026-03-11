@@ -37,7 +37,8 @@ class ExpandParam(Params):
             self.iouThrs = np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
             self.recThrs = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
             self.maxDets = [1, 10, 100]
-            self.areaRng = [[0 ** 2, 1e5 ** 2], [0 ** 2, 32 ** 2], [32 ** 2, 96 ** 2], [96 ** 2, 1e5 ** 2]]
+            #changed by mc,改为球面面积
+            self.areaRng = [[0 , 13], [0 , 0.2450], [0.2450, 0.9277], [0.9277, 13]]
             self.areaRngLbl = ['all', 'small', 'medium', 'large']
             self.useCats = 1
             # self.areaRng = [[0 ** 2, 1e5 ** 2], [0 ** 2, 10 ** 2], [10 ** 2, 32 ** 2],
@@ -181,10 +182,17 @@ class COCOExpandEval(COCOeval):
         return bbox_iod(xywh2xyxy(deepcopy(dets)), xywh2xyxy(deepcopy(ignore_gts)))
 
     # add by hui
+    #这里的交并距离需要用到球面面积来计算，暂时用水平竖直视场来代替，后续优化
     def IOD_by_IOU(self, dets, ignore_gts, ignore_gts_area, ious):
         if ignore_gts_area is None:
-            ignore_gts_area = ignore_gts[:, 2] * dets[:, 3]
-        dets_area = dets[:, 2] * dets[:, 3]
+            # 计算忽略框的球面面积
+            fov_x_gt = ignore_gts[:, 2]  # 忽略框水平视场角
+            fov_y_gt = ignore_gts[:, 3]  # 忽略框垂直视场角
+            ignore_gts_area = 4 * np.arccos(-np.sin(fov_x_gt / 2) * np.sin(fov_y_gt / 2)) - 2 * np.pi
+        # 计算检测框的球面面积
+        fov_x_det = dets[:, 2]  # 检测框水平视场角
+        fov_y_det = dets[:, 3]  # 检测框垂直视场角
+        dets_area = 4 * np.arccos(-np.sin(fov_x_det / 2) * np.sin(fov_y_det / 2)) - 2 * np.pi
         tile_dets_area = np.tile(dets_area.reshape((-1, 1)), (1, len(ignore_gts_area)))
         tile_gts_area = np.tile(ignore_gts_area.reshape((1, -1)), (len(dets_area), 1))
         iods = ious / (1 + ious) * (1 + tile_gts_area / tile_dets_area)
@@ -204,9 +212,19 @@ class COCOExpandEval(COCOeval):
             dt = [_ for cId in p.catIds for _ in self._dts[imgId, cId]]
         if len(gt) == 0 and len(dt) == 0:
             return None
-
+        #这里改掉不再依据面积设置ignore，或者根据视场w-fov*h-fov设置ignore
         for g in gt:
-            if g['ignore'] or (g['area'] < aRng[0] or g['area'] > aRng[1]):
+            # 使用bfov的fovx和fovy作为w和h
+            # bfov格式: [lon, lat, fovx, fovy]
+            bfov = g['bfov']
+            fov_x = bfov[2]  # fovx作为宽度（弧度）
+            fov_y = bfov[3]  # fovy作为高度（弧度）
+            # 使用精确的球面矩形面积公式
+            fov_area = 4 * np.arccos(-np.sin(fov_x / 2) * np.sin(fov_y / 2)) - 2 * np.pi
+
+            #这里需要添加打印抓取数据查看一下结果，因为这部分调整之后大物体精度是-1的现象消失了
+            # 判断条件：如果gt标记为ignore，或者w/h超出范围，则忽略
+            if g['ignore'] or (fov_area < aRng[0] or fov_area > aRng[1]):
                 g['_ignore'] = 1
             else:
                 g['_ignore'] = 0
@@ -229,10 +247,24 @@ class COCOExpandEval(COCOeval):
         gtIg = np.array([g['_ignore'] for g in gt])
         dtIg = np.zeros((T, D))
         # #### ad by hui ##############
-        ignore_gts = np.array([g['bbox'] for g in gt if g['_ignore']])
+        #这里需要添加打印抓取gtbfov是否获取正常
+        #需要搞清楚这里获取这个数据的目的是什么
+        ignore_gts = np.array([g['bfov'] for g in gt if g['_ignore']])
         ignore_gts_idx = np.array([i for i, g in enumerate(gt) if g['_ignore']])
+
+        # 下面这里需要改一下面积的问题g['area']
+        #     - 标准评估中忽略框不参与AP/AR计算
+        #     - 但某些场景下需要检测框与忽略框的匹配关系（如使用IOD交并距离评估）
+        #     - 预计算这些数据可以提高后续匹配效率
+        # 这里需要抓取打印一下
         if len(ignore_gts_idx) > 0 and len(dt) > 0:
-            ignore_gts_area = np.array([g['area'] for g in gt if g['_ignore']])  # use area
+            # 使用精确的球面矩形面积公式计算忽略框面积（NumPy批量处理）
+            # 提取所有忽略框的bfov参数
+            ignore_bfovs = np.array([g['bfov'] for g in gt if g['_ignore']])
+            fov_x = ignore_bfovs[:, 2]  # 忽略框的水平视场角
+            fov_y = ignore_bfovs[:, 3]  # 忽略框的垂直视场角
+            # NumPy批量计算所有忽略框的面积
+            ignore_gts_area = 4 * np.arccos(-np.sin(fov_x / 2) * np.sin(fov_y / 2)) - 2 * np.pi
             ignore_ious = (ious.T[ignore_gts_idx]).T
         ######################
         if not len(ious) == 0:
@@ -254,11 +286,14 @@ class COCOExpandEval(COCOeval):
                         # if match successful and best so far, store appropriately
                         iou = ious[dind, gind]
                         m = gind
+                    
                     # if match made store id of match for both dt and gt
                     if m == -1:
                         # #### ad by hui ##############
                         if self.use_iod_for_ignore and len(ignore_gts) > 0:
                             # time from 156.88s -> 79. s
+                            # 这里不需要改bbox因为bbox内部存储的是bfov参数
+                            # dets_area = dets[:, 2] * dets[:, 3]需要检查一下gt_area的计算方式
                             iods = self.IOD_by_IOU(np.array([d['bbox']]), None, ignore_gts_area,
                                                    ignore_ious[dind:dind + 1, :])[0]
                             # iods =self.IOD(np.array([d['bbox']]), ignore_gts)[0]
@@ -279,8 +314,23 @@ class COCOExpandEval(COCOeval):
                     dtIg[tind, dind] = gtIg[m]
                     dtm[tind, dind] = gt[m]['id']
                     gtm[tind, m] = d['id']
+        #下面的area是用于区分小中大以及是否超出范围的，这里需要审视一下
         # set unmatched detections outside of area range to ignore
-        a = np.array([d['area'] < aRng[0] or d['area'] > aRng[1] for d in dt]).reshape((1, len(dt)))
+        
+        # 使用精确的球面矩形面积公式计算检测框面积（NumPy批量处理）
+        if len(dt) > 0:
+            # 提取所有检测框的fov参数（批量处理）
+            dt_bboxes = np.array([d['bbox'] for d in dt])
+            fov_x = dt_bboxes[:, 2]  # 所有检测框的水平视场角
+            fov_y = dt_bboxes[:, 3]  # 所有检测框的垂直视场角
+            
+            # 使用NumPy批量计算所有检测框的面积
+            dt_areas = 4 * np.arccos(-np.sin(fov_x / 2) * np.sin(fov_y / 2)) - 2 * np.pi
+            
+            # 判断哪些检测框超出面积范围
+            a = np.logical_or(dt_areas < aRng[0], dt_areas > aRng[1]).reshape((1, len(dt)))
+        else:
+            a = np.array([], dtype=bool).reshape((1, 0))
         dtIg = np.logical_or(dtIg, np.logical_and(dtm == 0, np.repeat(a, T, 0)))
         # store results for given image and category
         return {
@@ -307,7 +357,7 @@ class COCOExpandEval(COCOeval):
 
         def _summarize(ap=1, iouThr=None, areaRng='all', maxDets=100 ):
             p = self.params
-            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>6s} | maxDets={:>3d} ] = {:0.4f}'  # change by hui {:0.3f} to {:0.4f}
+            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>12s} | maxDets={:>3d} ] = {:0.4f}'  # change by hui {:0.3f} to {:0.4f}
             titleStr = 'Average Precision' if ap == 1 else 'Average Recall'
             typeStr = '(AP)' if ap==1 else '(AR)'
             iouStr = '{:0.2f}:{:0.2f}'.format(p.iouThrs[0], p.iouThrs[-1]) \
@@ -434,7 +484,7 @@ class COCOExpandEval(COCOeval):
         #这里是计算iou的关键
 
 
-        
+        #这里需要打印所有结果来查看一下是否有ioU被过滤掉了
         # 计算IoU矩阵（[D, 5] × [G, 5] → [D, G]）
         self.ious = {(imgId, catId): computeIoU(imgId, catId) \
                         for imgId in p.imgIds
@@ -471,6 +521,7 @@ class COCOExpandEval(COCOeval):
             np.ndarray: IoU matrix of shape [D, G], where D is the number of detections
                         and G is the number of ground truth boxes.
         """
+        
         p = self.params
         if p.useCats:
             gt = self._gts[imgId, catId]
@@ -479,8 +530,12 @@ class COCOExpandEval(COCOeval):
             gt = [_ for cId in p.catIds for _ in self._gts[imgId,cId]]
             dt = [_ for cId in p.catIds for _ in self._dts[imgId,cId]]
         
-        if len(gt) == 0 and len(dt) == 0:
-            return np.zeros((0, 0))
+
+        
+        # 如果没有检测结果或真实框，直接返回，不打印任何信息
+        if len(gt) == 0 or len(dt) == 0:
+            return np.zeros((len(dt), len(gt)))
+        
         
         # Sort detections by score
         inds = np.argsort([-d['score'] for d in dt], kind='mergesort')
@@ -488,6 +543,7 @@ class COCOExpandEval(COCOeval):
         if len(dt) > p.maxDets[-1]:
             dt = dt[0:p.maxDets[-1]]
         
+
         # Extract bfov from gts and dts
         if p.iouType == 'segm':
             g = [g['segmentation'] for g in gt]
@@ -513,30 +569,32 @@ class COCOExpandEval(COCOeval):
             # 初始化IoU矩阵，形状：[D, G]
             ious = np.zeros((D, G))
             
-            # 创建Sph实例
-            from PANDORA.RoIoU.calculate_RoIoU import Sph
-            sph_calculator = Sph()
+            # 使用GPU加速的球面IoU计算方法
+            import torch
+            from sphdet.iou.sph_iou_api import sph2pob_efficient_iou
             
-            # 添加角度维度（全部为0）
-            # 转换为 [theta, phi, fov_x, fov_y, angle] 格式
-            gt_bfovs_with_angle = np.concatenate([
-                gt_bfovs,
-                np.zeros((G, 1))
-            ], axis=1)  # [G, 5]
+            # 转换为torch张量并移动到GPU
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
-            dt_bfovs_with_angle = np.concatenate([
-                dt_bfovs,
-                np.zeros((D, 1))
-            ], axis=1)  # [D, 5]
+            # 扩展检测框和真实框，生成所有组合对
+            # 检测框扩展为 [D*G, 4]
+            dt_bfovs_expanded = np.repeat(dt_bfovs, G, axis=0)
+            # 真实框扩展为 [D*G, 4]
+            gt_bfovs_expanded = np.tile(gt_bfovs, (D, 1))
             
-            # 计算所有检测框与真实框之间的球面IoU
-            for d_idx in range(D):
-                for g_idx in range(G):
-                    # 计算单个检测框与单个真实框的球面IoU
-                    det = dt_bfovs_with_angle[d_idx:d_idx+1]  # [1, 5]
-                    gt = gt_bfovs_with_angle[g_idx:g_idx+1]  # [1, 5]
-                    iou_value = sph_calculator.sphIoU(det, gt)[0, 0]
-                    ious[d_idx, g_idx] = iou_value
+            # 转换为torch张量
+            dt_bfovs_tensor = torch.tensor(dt_bfovs_expanded, dtype=torch.float32, device=device)
+            gt_bfovs_tensor = torch.tensor(gt_bfovs_expanded, dtype=torch.float32, device=device)
+            
+            # 转换为度（sph2pob_efficient_iou期望输入为度）
+            dt_bfovs_deg = torch.rad2deg(dt_bfovs_tensor)
+            gt_bfovs_deg = torch.rad2deg(gt_bfovs_tensor)
+            
+            # 使用sph2pob_efficient_iou计算IoU（对齐计算）
+            iou_tensor = sph2pob_efficient_iou(dt_bfovs_deg, gt_bfovs_deg, is_aligned=True)
+            
+            # 重塑为IoU矩阵 [D, G]
+            ious = iou_tensor.cpu().numpy().reshape(D, G)
             
             return ious
         else:

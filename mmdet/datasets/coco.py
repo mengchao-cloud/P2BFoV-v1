@@ -230,6 +230,7 @@ class CocoDataset(CustomDataset):
                 for i in range(bboxes.shape[0]):
                     data = dict()
                     data['image_id'] = img_id
+                    #这个地方我原本一维直接注释一下即可，没想到coco格式是左上角加长宽
                     # data['bbox'] = self.xyxy2xywh(bboxes[i])
                     data['bbox'] = bboxes[i][:4]
                     data['score'] = float(bboxes[i][4])

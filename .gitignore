@@ -119,6 +119,10 @@ bfov/detection_results/
 bfov/iou_results/
 bfov/merge_results/
 bfov/proposals/
+bfov/analysis_results/
+bfov/temp_data/
+result/
+test_results/
 
 # Pytorch
 *.pth
