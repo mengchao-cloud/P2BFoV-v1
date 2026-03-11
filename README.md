@@ -60,6 +60,8 @@ chmod +x tools/dist_train.sh
 conda install scikit-image  # or pip install scikit-image
 ```
 # 正式训练
+```shell script
+
 <!-- 单卡训练 -->
 python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
 
@@ -72,13 +74,32 @@ CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r5
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 
 
 
-# 验证方法 跳过训练直接验证
+<!-- # 验证方法 跳过训练直接验证 -->
  python tools/train.py \
     configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py \
     --work-dir work_dir/P2BFoV/ \
     --gpu-ids 1 \
     --cfg-options load_from=work_dir/P2BFoV/epoch_12.pth \
     runner.max_epochs=0 evaluation.interval=1
+
+
+
+ <!-- 只杀死训练相关的进程 -->
+    pkill -9 -u mengchao -f "python.*train.py"
+<!-- 只杀死推理相关的进程 -->
+    pkill -9 -u mengchao -f "python.*test.py"
+ <!-- 查看当前 mengchao 用户的进程 -->
+    ps -u mengchao -u
+<!-- 杀死特定进程（如果知道 PID） -->
+    kill -9 <PID>
+
+<!-- 1. 先查看当前进程 -->
+    ps -u mengchao -u
+<!-- 2. 确认无误后，杀死所有进程 -->
+    pkill -9 -u mengchao
+ <!-- 3. 验证进程已被杀死 -->
+    ps -u mengchao -u
+```
 
 
 
@@ -95,18 +116,3 @@ head3相较于2调整了掩码部分分辨率降低其显存占用
 <!-- head4相较于3需要调整尺度逻辑，将p2bnet的多尺度逻辑复原 -->
 <!-- head3相较于2需要调整特征提取部分的逻辑改bbox_extractor为mask_extractor -->
 
-# 只杀死训练相关的进程
-pkill -9 -u mengchao -f "python.*train.py"
-# 只杀死推理相关的进程
-pkill -9 -u mengchao -f "python.*test.py"
-# 查看当前 mengchao 用户的进程
-ps -u mengchao -u
-# 杀死特定进程（如果知道 PID）
-kill -9 <PID>
-
-# 1. 先查看当前进程
-ps -u mengchao -u
-# 2. 确认无误后，杀死所有进程
-pkill -9 -u mengchao
-# 3. 验证进程已被杀死
-ps -u mengchao -u
