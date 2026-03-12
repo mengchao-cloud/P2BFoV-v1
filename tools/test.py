@@ -3,7 +3,7 @@ import os
 import os.path as osp
 import time
 import warnings
-
+warnings.filterwarnings('ignore', message='On January 1, 2023, MMCV will release v2.0.0')
 import mmcv
 import torch
 from mmcv import Config, DictAction

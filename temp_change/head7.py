@@ -567,7 +567,7 @@ class P2BFoVHead(StandardRoIHead):
 
         mean_ious_all = iou1.mean()
         
-        mean_ious = [mean_iou_s, mean_iou_m, mean_iou_l, mean_iou_h,mean_ious_all]
+        mean_ious = [mean_iou_s, mean_iou_m, mean_iou_l, mean_iou_h]
 
         if self.test_mean_iou and stage == 1:
             self.sum_iou += iou1.sum()

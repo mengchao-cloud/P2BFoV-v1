@@ -119,6 +119,11 @@ bfov/detection_results/
 bfov/iou_results/
 bfov/merge_results/
 bfov/proposals/
+bfov/analysis_results/
+bfov/temp_data/
+result/
+test_results/
+bfov/json/
 
 # Pytorch
 *.pth
@@ -134,3 +139,15 @@ bfov/proposals/
 # Temporary files
 *.py~
 *.sh~
+#json
+*.json
+
+# 大文件类型
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# 日志文件
+*.log
+logs/

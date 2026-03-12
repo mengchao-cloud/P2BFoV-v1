@@ -620,9 +620,7 @@ class P2BFoV(TwoStageDetector):
                       **kwargs):
 
 
-  
-
-
+        # 开始特征提取
         x = self.extract_feat(img)  
 
         #这里需要注意下全景ERP特征提取的时候和普通平面不一样，要么两边padding或者改变卷积核
@@ -632,6 +630,15 @@ class P2BFoV(TwoStageDetector):
         fine_proposal_cfg = self.train_cfg.get('fine_proposal',
                                                self.test_cfg.rpn)
         losses = dict()#定义损失字典函数
+        
+        # if len(img_metas) > 0:
+            # h,w = img_metas[0]['pad_shape'][0],img_metas[0]['pad_shape'][1]
+            # meta = img_metas[0]
+            # print(f"ori_shape: {meta['ori_shape']}")
+            # print(f"img_shape: {meta['img_shape']}") 
+            # print(f"pad_shape: {meta['pad_shape']}")
+            # print(f"scale_factor: {meta['scale_factor']}")
+            # print(f"h_w: {meta['pad_shape'][0]}/{meta['pad_shape'][1]}")
 
         for stage in range(self.num_stages):
             if stage == 0:

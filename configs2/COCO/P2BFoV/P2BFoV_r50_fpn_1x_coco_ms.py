@@ -10,7 +10,7 @@ _base_ = [
 norm_cfg = dict(type='GN', num_groups=32, requires_grad=True)  # add
 
 # 调试模式开关，False表示正常训练
-debug = False
+debug = True
 
 # 模型设置
 num_stages = 2  # 模型阶段数，这里设置为2
@@ -28,7 +28,7 @@ model = dict(
         norm_cfg=dict(type='BN', requires_grad=True),  # 批归一化配置
         norm_eval=True,  # 评估时冻结归一化层
         style='pytorch',  # 网络风格为PyTorch格式
-        conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
+        # conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
     ),
     
     neck=dict(  # 颈部网络配置（特征金字塔FPN）
@@ -39,14 +39,14 @@ model = dict(
         add_extra_convs='on_input',  # 在输入特征图上添加额外卷积
         num_outs=4,  # 输出特征图数量（这里为4）
         norm_cfg=norm_cfg,  # 使用前面定义的GroupNorm配置
-        conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
+        # conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
     ),
     
     roi_head=dict(  # ROI头配置
         type='P2BFoVHead',  # 类型为P2BFoVHead
         num_stages=num_stages,  # 阶段数，使用前面定义的2
+        # top_k=7,  # 顶部k值选择
         top_k=7,  # 顶部k值选择
-        # top_k=2,  # 顶部k值选择
         with_atten=False,  # 不使用注意力机制
         
         # ROI特征提取器配置
@@ -68,7 +68,7 @@ model = dict(
 
             num_classes=37,  # 类别数（COCO数据集为37类）
             num_ref_fcs=0,  # 参考全连接层数量
-            conv_cfg=dict(type='Conv', padding_mode='circular'),  # 添加循环padding配置
+            # conv_cfg=dict(type='Conv', padding_mode='circular'),  # 添加循环padding配置
             
             # 边界框编码器配置
             bbox_coder=dict(
@@ -99,7 +99,7 @@ model = dict(
         base_proposal=dict(  # 基础 proposal 配置
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
-            base_scales=[6, 12, 24, 48, 92],  # 基础尺fov度
+            base_scales=[6, 18, 36, 72, 108, 144],  # 基础尺fov度
             base_ratios=[ 1 / 1.5, 1.0, 1.5],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
@@ -109,9 +109,9 @@ model = dict(
             gen_proposal_mode='fix_gen',  # proposal生成模式
             cut_mode=None,  # 不使用裁剪模式
             shake_ratio=[0.1],  # 抖动比例
-            # base_ratios=[1, 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
-            base_ratios=[1, 1.2,0.8],  # 基础长宽比
-            iou_thr=0.01,  # IOU阈值
+            base_ratios=[ 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
+            # base_ratios=[1, 1.2,0.8],  # 基础长宽比
+            iou_thr=0.,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
         ),
         rcnn=None  # RCNN训练配置为None
@@ -128,7 +128,7 @@ model = dict(
         ),
         rcnn=dict(  # 关键：补充RCNN测试配置，解决None属性问题
             score_thr=0,  # 推理时的置信度阈值（过滤低置信度预测）
-            nms=dict(type='nms', iou_threshold=0.5),  # 检测框的NMS配置
+            nms=dict(type='nms', iou_threshold=0.1),  # 检测框的NMS配置
             max_per_img=100  # 每张图最终保留的检测框数量
         )
 
@@ -152,11 +152,11 @@ train_pipeline = [
     dict(type='LoadAnnotations', with_bbox=True),  # 加载标注，包含边界框
     dict(type='Resize',  # 调整图像大小
         #  img_scale=[(2000, 480), (2000, 576), (2000, 688), (2000, 864), (2000, 1000), (2000, 1200)],  # 多尺度
-         img_scale=[(1920, 960)],  # 图像尺度不能动，如果改变的话会直接导致经纬度坐标失真
+         img_scale=[(1024, 512)],  # 图像尺度不能动，如果改变的话会直接导致经纬度坐标失真
          multiscale_mode='value',  # 多尺度模式为指定值
          keep_ratio=True),  # 保持长宽比
     # 随机翻转，调试模式关闭
-    dict(type='RandomFlip', flip_ratio=0.5) if not debug else dict(type='RandomFlip', flip_ratio=0.),
+    dict(type='RandomFlip', flip_ratio=0.) if not debug else dict(type='RandomFlip', flip_ratio=0.),
     dict(type='Normalize',** img_norm_cfg),  # 归一化处理
     dict(type='Pad', size_divisor=32),  # 填充图像至32的倍数
     dict(type='DefaultFormatBundle'),  # 默认格式打包
@@ -166,7 +166,7 @@ train_pipeline = [
 ]
 
 # 测试尺度
-test_scale = 1200# 改进后的调用方式
+test_scale = 512# 改进后的调用方式
 
 # 测试数据处理流水线
 test_pipeline = [
@@ -174,7 +174,7 @@ test_pipeline = [
     dict(type='LoadAnnotations', with_bbox=True),  # 加载标注，包含边界框
     dict(
         type='MultiScaleFlipAug',  # 多尺度翻转增强
-        img_scale=(2000, test_scale) if test_scale else (1333, 800),  # 图像尺度
+        img_scale=(1024, test_scale),  # 图像尺度
         flip=False,  # 不翻转
         transforms=[  # 变换列表
             dict(type='Resize', keep_ratio=True),  # 调整大小，保持比例
@@ -190,8 +190,8 @@ test_pipeline = [
 
 # 数据加载配置
 data = dict(
-    samples_per_gpu=6,  # 每个GPU的样本数（从4增加到6，提高GPU利用率从49%到73.5%）
-    workers_per_gpu=8,  # 每个GPU的工作进程数（从6增加到8，提高数据加载速度）
+    samples_per_gpu=1,  # 每个GPU的样本数
+    workers_per_gpu=4,  # 每个GPU的工作进程数
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置
         type=dataset_type,  # 数据集类型
@@ -200,7 +200,7 @@ data = dict(
         pipeline=train_pipeline,  # 使用训练流水线
     ),
     val=dict(  # 验证集配置
-        samples_per_gpu=6,  # 每个GPU的样本数（从4增加到6，保持一致）
+        samples_per_gpu=1,  # 每个GPU的样本数
         type=dataset_type,  # 数据集类型
         ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
         img_prefix=data_root + 'images/',  # 图像前缀路径
@@ -237,7 +237,6 @@ work_dir='work_dir/P2BFoV/'  # 工作目录
 
 #这里需要确定是否需要评估bfov和point，暂时搁置
 # 评估配置
-
 evaluation = dict(
     interval=12,  # 评估间隔（每12个epoch）
     # metric='bfov',  # 评估指标为bfov，这里之所以还用bbox是因为保留整体逻辑联通
