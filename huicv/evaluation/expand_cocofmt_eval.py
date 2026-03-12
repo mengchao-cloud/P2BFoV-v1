@@ -357,7 +357,7 @@ class COCOExpandEval(COCOeval):
 
         def _summarize(ap=1, iouThr=None, areaRng='all', maxDets=100 ):
             p = self.params
-            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>12s} | maxDets={:>3d} ] = {:0.4f}'  # change by hui {:0.3f} to {:0.4f}
+            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>6s} | maxDets={:>3d} ] = {:0.4f}'  # change by hui {:0.3f} to {:0.4f}
             titleStr = 'Average Precision' if ap == 1 else 'Average Recall'
             typeStr = '(AP)' if ap==1 else '(AR)'
             iouStr = '{:0.2f}:{:0.2f}'.format(p.iouThrs[0], p.iouThrs[-1]) \

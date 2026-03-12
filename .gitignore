@@ -123,7 +123,8 @@ bfov/analysis_results/
 bfov/temp_data/
 result/
 test_results/
-
+bfov/detection_results/*.json
+bfov/temp_json/*.json
 # Pytorch
 *.pth
 *.ckpt
@@ -134,6 +135,7 @@ test_results/
 *.tflite
 *.model
 *.weights
+*.json
 
 # Temporary files
 *.py~
