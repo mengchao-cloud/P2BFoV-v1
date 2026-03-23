@@ -121,10 +121,13 @@ bfov/merge_results/
 bfov/proposals/
 bfov/analysis_results/
 bfov/temp_data/
+bfov/temp_json/result_image/
 result/
 test_results/
 bfov/detection_results/*.json
 bfov/temp_json/*.json
+bfov/bfov-7*7/
+bfov/roi_result/
 # Pytorch
 *.pth
 *.ckpt

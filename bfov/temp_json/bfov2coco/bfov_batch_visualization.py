@@ -8,6 +8,7 @@ from PANDORA.PRDA.lib.ReuseGPUImageRecorder import ReuseGPUImageRecorder
 
 # 输入输出配置
 MERGED_COCO_FILE = './bfov/temp_json/merge_result/merged_coco_results.json'
+# MERGED_COCO_FILE = '../360indoor/ann/test_coco.json'
 IMAGE_DIR = '../360indoor/images/'
 OUTPUT_DIR = './bfov/temp_json/result_image/'
 

@@ -46,7 +46,7 @@ model = dict(
         type='P2BFoVHead',  # 类型为P2BFoVHead
         num_stages=num_stages,  # 阶段数，使用前面定义的2
         # top_k=7,  # 顶部k值选择
-        top_k=7,  # 顶部k值选择
+        top_k=2,  # 顶部k值选择
         with_atten=False,  # 不使用注意力机制
         
         # ROI特征提取器配置
@@ -99,8 +99,8 @@ model = dict(
         base_proposal=dict(  # 基础 proposal 配置
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
-            base_scales=[6,18, 36, 72, 108, 144],  # 基础尺fov度
-            base_ratios=[1 / 2, 1 / 1.5, 1.0, 1.5, 2.0],  # 基础长宽比
+            base_scales=[12,14],  # 基础尺fov度
+            base_ratios=[ 1 / 1.5, 1.5],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
             gen_num_neg=0),  # 生成负样本数量
@@ -109,7 +109,7 @@ model = dict(
             gen_proposal_mode='fix_gen',  # proposal生成模式
             cut_mode=None,  # 不使用裁剪模式
             shake_ratio=[0.1],  # 抖动比例
-            base_ratios=[1, 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
+            base_ratios=[ 1.2, 0.8],  # 基础长宽比
             # base_ratios=[1, 1.2,0.8],  # 基础长宽比
             iou_thr=0.,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
@@ -190,7 +190,7 @@ test_pipeline = [
 
 # 数据加载配置
 data = dict(
-    samples_per_gpu=1,  # 每个GPU的样本数
+    samples_per_gpu=3,  # 每个GPU的样本数
     workers_per_gpu=4,  # 每个GPU的工作进程数
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置

@@ -2,7 +2,7 @@ import json
 import os
 import numpy as np
 # 设置文件路径
-detection_file = './bfov/temp_json/result_json/head7-1/_512_latest_result.json'
+detection_file = './bfov/temp_json/result_json/head7-1-16epoch/_512_latest_result.json'
 coco_file = './bfov/temp_json/test_coco.json'
 output_file = './bfov/temp_json/merge_result/merged_coco_results.json'
 
