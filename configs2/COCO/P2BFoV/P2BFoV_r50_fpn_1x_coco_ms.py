@@ -100,7 +100,7 @@ model = dict(
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
             base_scales=[6, 18, 36, 72, 108, 144],  # 基础尺fov度
-            base_ratios=[ 1 / 1.5, 1.0, 1.5],  # 基础长宽比
+            base_ratios=[ 1/2.1 / 1.5, 1.0, 1.5,2],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
             gen_num_neg=0),  # 生成负样本数量
@@ -109,7 +109,7 @@ model = dict(
             gen_proposal_mode='fix_gen',  # proposal生成模式
             cut_mode=None,  # 不使用裁剪模式
             shake_ratio=[0.1],  # 抖动比例
-            base_ratios=[ 1.2, 1.3, 0.8, 0.7],  # 基础长宽比
+            base_ratios=[ 1.2, 1.3,1, 0.8, 0.7],  # 基础长宽比
             # base_ratios=[1, 1.2,0.8],  # 基础长宽比
             iou_thr=0.,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
@@ -227,10 +227,10 @@ lr_config = dict(
     warmup='linear',  # 线性预热
     warmup_iters=500,  # 预热迭代次数
     warmup_ratio=0.001,  # 预热学习率比例
-    step=[8, 11])  # 在第8和11个epoch调整学习率
+    step=[8, 15])  # 在第8和15个epoch调整学习率
 
 # 运行器配置
-runner = dict(type='EpochBasedRunner', max_epochs=12)  # 基于epoch的运行器，最大12个epoch
+runner = dict(type='EpochBasedRunner', max_epochs=16)  # 基于epoch的运行器，最大25个epoch
 work_dir='work_dir/P2BFoV/'  # 工作目录
 
 
@@ -238,7 +238,7 @@ work_dir='work_dir/P2BFoV/'  # 工作目录
 #这里需要确定是否需要评估bfov和point，暂时搁置
 # 评估配置
 evaluation = dict(
-    interval=12,  # 评估间隔（每12个epoch）
+    interval=20,  # 评估间隔（每25个epoch）
     # metric='bfov',  # 评估指标为bfov，这里之所以还用bbox是因为保留整体逻辑联通
     # 但是背后的处理层面都改成了球面iou计算逻辑
     metric='bbox',  # 评估指标为边界框

@@ -60,7 +60,6 @@ chmod +x tools/dist_train.sh
 conda install scikit-image  # or pip install scikit-image
 ```
 # 正式训练
-# 正式训练
 ```shell script
 
 <!-- 单卡训练 -->
@@ -70,6 +69,11 @@ python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-d
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 
 
 CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
+
+<!-- 两张卡接着中断前训练 -->
+CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
+    --work-dir work_dir/P2BFoV/ \
+    --resume-from work_dir/P2BFoV/epoch_13.pth
 
 <!-- 指定gpu-id的分布式训练 -->
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 
@@ -82,6 +86,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFo
     --gpu-ids 0 \
     --cfg-options load_from=work_dir/P2BFoV/epoch_8.pth \
     runner.max_epochs=0 evaluation.interval=1
+
+<!-- # 验证方法多卡验证 -->
+CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
+    --work-dir work_dir/P2BFoV/ \
+    --cfg-options "load_from=work_dir/P2BFoV/epoch_16.pth" "runner.max_epochs=0" "evaluation.interval=1"
+
+
 
 <!-- # 获取结果文件转换为coco格式 -->
 python bfov/temp_json/bfov2coco/merge_detection_results.py 
@@ -133,3 +144,5 @@ head6相较于head4-2改变了掩码的生成逻辑，在生成掩码之后对�
 
 head7:改动很大，去掉了循环卷积，球面加权，并且检查出来的问题出现在伪框转结果的地方，由于缩放因子会让box放大回到原来的图像，所以这里已经处理，并且采用head6的mask_to_bbox逻辑,而且部分放开尺度，调整基础尺度跨度，之前存在代码混乱的问题，导致每次改动都无法生效
 head7-1:在head7的基础上进行means_iou输出补充，同时扩大基础iou跨度以及数量
+head7-2:相较于head7-1，增加了循环卷积的配置(效果稍微变差了)
+head8:改变获取提案特征的方式为切平面提取
