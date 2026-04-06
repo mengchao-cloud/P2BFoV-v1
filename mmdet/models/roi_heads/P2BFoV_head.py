@@ -562,36 +562,104 @@ class P2BFoVHead(StandardRoIHead):
         return constrained_centers
 
 
+    # def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
+    #     """
+    #     三维笛卡尔加权平均算法
+        
+    #     Args:
+    #         points: 3D点，形状为 [batch_size, num_points, 3]
+    #         weights: 权重，形状为 [batch_size, num_points]
+    #         max_iter: 最大迭代次数（兼容旧接口，不再使用）
+    #         tol: 收敛容忍度（兼容旧接口，不再使用）
+            
+    #     Returns:
+    #         weighted_points: 笛卡尔加权平均点，形状为 [batch_size, 3]
+    #     """
+    #     batch_size, num_points, _ = points.shape
+        
+    #     # 直接进行三维笛卡尔加权平均
+    #     # 将权重扩展为 [batch_size, num_points, 1] 以便与 points 相乘
+    #     weights_expanded = weights.unsqueeze(2)
+        
+    #     # 计算加权和
+    #     weighted_sum = torch.sum(weights_expanded * points, dim=1)  # [batch_size, 3]
+        
+    #     # 计算权重总和（用于归一化）
+    #     weights_sum = weights.sum(dim=1, keepdim=True)  # [batch_size, 1]
+        
+    #     # 进行归一化，避免除以零
+    #     weighted_average = weighted_sum / (weights_sum + tol)  # [batch_size, 3]
+        
+    #     return weighted_average
     def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
         """
-        三维笛卡尔加权平均算法
+        球面加权平均算法（A1线性收敛）
         
         Args:
-            points: 3D点，形状为 [batch_size, num_points, 3]
+            points: 单位球面上的点，形状为 [batch_size, num_points, 3]
             weights: 权重，形状为 [batch_size, num_points]
-            max_iter: 最大迭代次数（兼容旧接口，不再使用）
-            tol: 收敛容忍度（兼容旧接口，不再使用）
+            max_iter: 最大迭代次数
+            tol: 收敛容忍度
             
         Returns:
-            weighted_points: 笛卡尔加权平均点，形状为 [batch_size, 3]
+            weighted_points: 球面加权平均点，形状为 [batch_size, 3]
         """
         batch_size, num_points, _ = points.shape
         
-        # 直接进行三维笛卡尔加权平均
-        # 将权重扩展为 [batch_size, num_points, 1] 以便与 points 相乘
-        weights_expanded = weights.unsqueeze(2)
+        # 初始化：欧氏加权归一化投影到球面
+        weighted_euclidean = torch.bmm(weights.unsqueeze(1), points).squeeze(1)  # [batch_size, 3]
+        q = weighted_euclidean / (torch.norm(weighted_euclidean, dim=1, keepdim=True) + tol)
         
-        # 计算加权和
-        weighted_sum = torch.sum(weights_expanded * points, dim=1)  # [batch_size, 3]
+        for iter_idx in range(max_iter):
+            # 计算每个点到当前估计点的切平面向量
+            u_total = torch.zeros_like(q)  # [batch_size, 3]
+            
+            for i in range(batch_size):
+                q_i = q[i]  # [3]
+                points_i = points[i]  # [num_points, 3]
+                weights_i = weights[i]  # [num_points]
+                
+                # 计算球面距离和切平面向量
+                dots = torch.matmul(points_i, q_i)  # [num_points]
+                dots = torch.clamp(dots, -1.0 + tol, 1.0 - tol)  # 避免数值问题
+                
+                distances = torch.arccos(dots)  # [num_points]
+                
+                # 避免除以零
+                sin_distances = torch.sin(distances)
+                valid_mask = sin_distances > tol
+                
+                # 对数映射：将点映射到切平面
+                tangent_vectors = torch.zeros_like(points_i)
+                for j in range(num_points):
+                    if valid_mask[j]:
+                        # 切平面向量 = (p - (p·q)q) * (distance / sin(distance))
+                        proj = dots[j] * q_i
+                        tangent_vector = (points_i[j] - proj) * (distances[j] / sin_distances[j])
+                        tangent_vectors[j] = tangent_vector
+                    else:
+                        # 距离很小，近似为切平面原点
+                        tangent_vectors[j] = torch.zeros_like(q_i)
+                
+                # 切平面加权平均
+                u_i = torch.sum(weights_i.unsqueeze(1) * tangent_vectors, dim=0)  # [3]
+                u_total[i] = u_i
+            
+            # 检查收敛
+            u_norm = torch.norm(u_total, dim=1)
+            if torch.all(u_norm < tol):
+                break
+            
+            # 指数映射：更新估计点
+            for i in range(batch_size):
+                u_i = u_total[i]
+                r = torch.norm(u_i)
+                if r > tol:
+                    # exp_q(u) = q * cos(r) + (u/r) * sin(r)
+                    q[i] = q[i] * torch.cos(r) + (u_i / r) * torch.sin(r)
+                # 如果r很小，q保持不变
         
-        # 计算权重总和（用于归一化）
-        weights_sum = weights.sum(dim=1, keepdim=True)  # [batch_size, 1]
-        
-        # 进行归一化，避免除以零
-        weighted_average = weighted_sum / (weights_sum + tol)  # [batch_size, 3]
-        
-        return weighted_average
-
+        return q
 
 
     def simple_test(self,

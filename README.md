@@ -63,7 +63,7 @@ conda install scikit-image  # or pip install scikit-image
 ```shell script
 
 <!-- 单卡训练 -->
-python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 3
 
 <!-- 两张卡分布式训练 -->
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 
@@ -71,9 +71,9 @@ bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
 CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
 
 <!-- 两张卡接着中断前训练 -->
-CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
+CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
     --work-dir work_dir/P2BFoV/ \
-    --resume-from work_dir/P2BFoV/epoch_13.pth
+    --resume-from work_dir/P2BFoV/epoch_1.pth
 
 <!-- 指定gpu-id的分布式训练 -->
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 
@@ -88,9 +88,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFo
     runner.max_epochs=0 evaluation.interval=1
 
 <!-- # 验证方法多卡验证 -->
-CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
+CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
     --work-dir work_dir/P2BFoV/ \
-    --cfg-options "load_from=work_dir/P2BFoV/epoch_16.pth" "runner.max_epochs=0" "evaluation.interval=1"
+    --cfg-options "load_from=work_dir/P2BFoV/epoch_6.pth" "runner.max_epochs=0" "evaluation.interval=1"
 
 
 
@@ -146,3 +146,7 @@ head7:改动很大，去掉了循环卷积，球面加权，并且检查出来�
 head7-1:在head7的基础上进行means_iou输出补充，同时扩大基础iou跨度以及数量
 head7-2:相较于head7-1，增加了循环卷积的配置(效果稍微变差了)
 head8:改变获取提案特征的方式为切平面提取
+head8-1:在head8的基础上，
+    配置调整：卷积改成reflect padding
+head8-2在head8的基础上，
+    配置为1*1采样，外加球面加权

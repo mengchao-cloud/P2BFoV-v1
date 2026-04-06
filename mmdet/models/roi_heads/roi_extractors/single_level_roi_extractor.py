@@ -69,7 +69,6 @@ class SingleRoIExtractor(BaseRoIExtractor):
         # add by mc
         """
         批量计算单位球坐标系下切平面的尺度（结合图像大小）
-        
         参数:
             fov_u: 水平视场角（弧度）
                 - 支持torch.Tensor标量或张量

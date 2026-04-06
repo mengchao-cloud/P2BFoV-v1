@@ -28,7 +28,7 @@ model = dict(
         norm_cfg=dict(type='BN', requires_grad=True),  # 批归一化配置
         norm_eval=True,  # 评估时冻结归一化层
         style='pytorch',  # 网络风格为PyTorch格式
-        # conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
+        # conv_cfg=dict(type='Conv', padding_mode='reflect')  # 添加卷积配置，启用reflect padding
     ),
     
     neck=dict(  # 颈部网络配置（特征金字塔FPN）
@@ -39,18 +39,19 @@ model = dict(
         add_extra_convs='on_input',  # 在输入特征图上添加额外卷积
         num_outs=4,  # 输出特征图数量（这里为4）
         norm_cfg=norm_cfg,  # 使用前面定义的GroupNorm配置
-        # conv_cfg=dict(type='Conv', padding_mode='circular')  # 添加卷积配置，启用circular padding
+        # conv_cfg=dict(type='Conv', padding_mode='reflect')  # 添加卷积配置
     ),
     
     roi_head=dict(  # ROI头配置
         type='P2BFoVHead',  # 类型为P2BFoVHead
         num_stages=num_stages,  # 阶段数，使用前面定义的2
         # top_k=7,  # 顶部k值选择
-        top_k=7,  # 顶部k值选择
+        top_k=4,  # 顶部k值选择
         with_atten=False,  # 不使用注意力机制
         
         # ROI特征提取器配置
         bbox_roi_extractor=dict(
+            # 特征提取器内部已经被改成切平面特征提取逻辑
             type='SingleRoIExtractor',  # 单个ROI提取器
             # 这里或许要根据实际数据集调整输出大小
             roi_layer=dict(type='RoIAlign', output_size=7),  # 使用RoIAlign，输出大小7x7
@@ -68,7 +69,7 @@ model = dict(
 
             num_classes=37,  # 类别数（COCO数据集为37类）
             num_ref_fcs=0,  # 参考全连接层数量
-            # conv_cfg=dict(type='Conv', padding_mode='circular'),  # 添加循环padding配置
+            # conv_cfg=dict(type='Conv', padding_mode='reflect'),  # 添加循环padding配置
             
             # 边界框编码器配置
             bbox_coder=dict(
@@ -100,7 +101,7 @@ model = dict(
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
             base_scales=[6, 18, 36, 72, 108, 144],  # 基础尺fov度
-            base_ratios=[ 1/2.1 / 1.5, 1.0, 1.5,2],  # 基础长宽比
+            base_ratios=[  1/2,1 / 1.5, 1.0, 1.5,2],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
             gen_num_neg=0),  # 生成负样本数量
@@ -111,7 +112,7 @@ model = dict(
             shake_ratio=[0.1],  # 抖动比例
             base_ratios=[ 1.2, 1.3,1, 0.8, 0.7],  # 基础长宽比
             # base_ratios=[1, 1.2,0.8],  # 基础长宽比
-            iou_thr=0.,  # IOU阈值
+            iou_thr=0.3,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
         ),
         rcnn=None  # RCNN训练配置为None
@@ -227,7 +228,7 @@ lr_config = dict(
     warmup='linear',  # 线性预热
     warmup_iters=500,  # 预热迭代次数
     warmup_ratio=0.001,  # 预热学习率比例
-    step=[8, 15])  # 在第8和15个epoch调整学习率
+    step=[9, 14])  # 在第8和15个epoch调整学习率
 
 # 运行器配置
 runner = dict(type='EpochBasedRunner', max_epochs=16)  # 基于epoch的运行器，最大25个epoch
@@ -238,11 +239,11 @@ work_dir='work_dir/P2BFoV/'  # 工作目录
 #这里需要确定是否需要评估bfov和point，暂时搁置
 # 评估配置
 evaluation = dict(
-    interval=20,  # 评估间隔（每25个epoch）
+    interval=20,  # 评估间隔（每20个epoch）
     # metric='bfov',  # 评估指标为bfov，这里之所以还用bbox是因为保留整体逻辑联通
     # 但是背后的处理层面都改成了球面iou计算逻辑
     metric='bbox',  # 评估指标为边界框
     save_result_file=work_dir + '_' + str(test_scale) + '_latest_result.json',  # 结果保存文件
     do_first_eval=False,  # 不进行首次评估
-    do_final_eval=True,  # 进行最终评估
+    do_final_eval=False,  # 进行最终评估
 )
