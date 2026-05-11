@@ -69,6 +69,7 @@ class SingleRoIExtractor(BaseRoIExtractor):
         # add by mc
         """
         批量计算单位球坐标系下切平面的尺度（结合图像大小）
+        
         参数:
             fov_u: 水平视场角（弧度）
                 - 支持torch.Tensor标量或张量
@@ -130,39 +131,51 @@ class SingleRoIExtractor(BaseRoIExtractor):
 
     def bfov_roi_to_14x14_erp(self, bfov_params, erp_width=1024, erp_height=512, grid_size=14):
         """
-        Generate 14x14 ERP points from BFOV parameters using PyTorch.
-        This version follows the exact same logic as the numpy version bfov_to_spherical_points.
+        Generate 14x14 ERP points from BFOV/RBFoV parameters using PyTorch.
+        Supports both 4D BFoV and 5D RBFoV (with rotation angle).
         
         Args:
-            bfov_params: Tensor of shape (N, 4) containing BFOV parameters for each ROI.
-                        Each row is [lon, lat, fov_u, fov_v] - all in radians:
-                        - lon: BFOV center longitude (radians, range [-π, π])
-                        - lat: BFOV center latitude (radians, range [-π/2, π/2])
-                        - fov_u: Horizontal field of view (radians, longitude direction)
-                        - fov_v: Vertical field of view (radians, latitude direction)
-            erp_width: ERP image width, default 1024
-            erp_height: ERP image height, default 512
-            grid_size: Grid size, default 14
+            bfov_params: Tensor of shape (N, 4) or (N, 5) containing BFOV/RBFoV parameters.
+                        ALL PARAMETERS MUST BE IN RADIANS!
+                        
+                        - 4D BFoV: [lon, lat, fov_u, fov_v]
+                        - 5D RBFoV: [lon, lat, fov_u, fov_v, angle]
+                        
+                        Parameter details (all in radians):
+                        - lon: Center longitude (range [-π, π])
+                        - lat: Center latitude (range [-π/2, π/2])
+                        - fov_u: Horizontal field of view (positive radians)
+                        - fov_v: Vertical field of view (positive radians)
+                        - angle: Rotation angle around the center point (radians, optional, default=0)
+            erp_width: ERP image width in pixels, default 1024
+            erp_height: ERP image height in pixels, default 512
+            grid_size: Grid size for sampling, default 14 (generates 14x14 points)
         
         Returns:
-            points: Tensor of shape (N, 14, 14, 2) containing 14x14 ERP points for each BFOV.
-                    Each BFOV corresponds to a 14x14 2D array where each element is (x, y) coordinates (float).
+            points: Tensor of shape (N, grid_size, grid_size, 2) containing ERP coordinates.
+                    Each element is (x, y) pixel coordinates on the ERP image.
         """
         # Get batch size and device
         N = bfov_params.size(0)
         device = bfov_params.device
             
-        # Extract BFOV parameters (all in radians)
+        # Extract BFOV/RBFoV parameters (all in radians)
         lon = bfov_params[:, 0]  # (N,), longitude in radians
         lat = bfov_params[:, 1]  # (N,), latitude in radians
         fov_u = bfov_params[:, 2]  # (N,), horizontal FOV in radians
         fov_v = bfov_params[:, 3]  # (N,), vertical FOV in radians
         
-        # Convert longitude/latitude to polar/azimuth angles (same as numpy version)
+        # Handle rotation angle (5th dimension) - default to 0 if not provided
+        if bfov_params.size(1) >= 5:
+            angle = bfov_params[:, 4]  # (N,), rotation angle in radians
+        else:
+            angle = torch.zeros(N, device=device)  # No rotation by default
+        
+        # Convert longitude/latitude to polar/azimuth angles
         phi0 = lon  # Azimuth angle (N,)
         theta0 = PI/2 - lat  # Polar angle (N,)
         
-        # 1. Calculate BFOV center unit vector c (x,y,z) - same as numpy version
+        # 1. Calculate center unit vector c (x,y,z)
         c_x = torch.sin(theta0) * torch.cos(phi0)  # (N,)
         c_y = torch.sin(theta0) * torch.sin(phi0)  # (N,)
         c_z = torch.cos(theta0)  # (N,)
@@ -171,21 +184,21 @@ class SingleRoIExtractor(BaseRoIExtractor):
         # 添加归一化确保单位向量精度，提高数值稳定性
         c = c / torch.norm(c, dim=1, keepdim=True)  # (N, 3)
         
-        # 2. Construct local orthogonal basis (e_u, e_v) - same as numpy version
+        # 2. Construct local orthogonal basis (e_u, e_v)
         sin_phi = torch.sin(phi0)  # (N,)
         cos_phi = torch.cos(phi0)  # (N,)
         sin_theta = torch.sin(theta0)  # (N,)
         cos_theta = torch.cos(theta0)  # (N,)
         
-        # Longitude direction vector (horizontal)
+        # Longitude direction vector (horizontal, pointing east)
         lon_dir = torch.stack([-sin_phi, cos_phi, torch.zeros_like(sin_phi)], dim=1)  # (N, 3)
         lon_dir = lon_dir / torch.norm(lon_dir, dim=1, keepdim=True)  # 归一化，确保单位向量
         
-        # Latitude direction vector (vertical)
+        # Latitude direction vector (vertical, pointing north)
         lat_dir = torch.stack([-cos_theta*cos_phi, -cos_theta*sin_phi, sin_theta], dim=1)  # (N, 3)
         lat_dir = lat_dir / torch.norm(lat_dir, dim=1, keepdim=True)  # 归一化，确保单位向量
         
-        # Ensure orthogonality - same as numpy version
+        # Ensure orthogonality
         dot_product = torch.sum(lon_dir * lat_dir, dim=1)  # (N,)
         mask = torch.abs(dot_product) > 1e-6  # (N,)
         
@@ -200,7 +213,17 @@ class SingleRoIExtractor(BaseRoIExtractor):
             lon_dir[mask] = lon_dir_ortho[mask]
             lat_dir[mask] = lat_dir_ortho[mask]
         
-        # 3. Calculate tangent plane half-width (U, V) - same as numpy version
+        # 3. Apply rotation angle: rotate local coordinate system
+        # Rotate around the center point vector c by angle
+        cos_angle = torch.cos(angle)
+        sin_angle = torch.sin(angle)
+        
+        # Rotated horizontal direction vector
+        lon_dir_rot = cos_angle.unsqueeze(1) * lon_dir + sin_angle.unsqueeze(1) * lat_dir
+        # Rotated vertical direction vector
+        lat_dir_rot = -sin_angle.unsqueeze(1) * lon_dir + cos_angle.unsqueeze(1) * lat_dir
+        
+        # 4. Calculate tangent plane half-width (U, V)
         # 添加数值稳定性处理：限制tan函数的输入，避免接近π/2
         max_angle = PI/2 - 1e-4  # 接近但小于π/2的值
         fov_u_half = torch.clamp(fov_u / 2.0, min=-max_angle, max=max_angle)
@@ -209,11 +232,11 @@ class SingleRoIExtractor(BaseRoIExtractor):
         U = torch.tan(fov_u_half)  # Horizontal half-width (N,)
         V = torch.tan(fov_v_half)  # Vertical half-width (N,)
         
-        # 4. Calculate grid step - same as numpy version
+        # 5. Calculate grid step
         delta_u = 2 * U / grid_size  # Horizontal step (N,)
         delta_v = 2 * V / grid_size  # Vertical step (N,)
         
-        # 5. Generate grid indices - i对应垂直方向(v), j对应水平方向(u)
+        # 6. Generate grid indices - i对应垂直方向(v), j对应水平方向(u)
         indices = torch.zeros(grid_size, grid_size, 2, device=device, dtype=torch.int64)
         for i in range(grid_size):  # i: 垂直方向(v)索引
             for j in range(grid_size):  # j: 水平方向(u)索引
@@ -224,22 +247,17 @@ class SingleRoIExtractor(BaseRoIExtractor):
         i_grid = indices[..., 0].float()  # (14, 14) - 垂直方向(v)
         j_grid = indices[..., 1].float()  # (14, 14) - 水平方向(u)
         
-        # 6. Calculate u_center and v_center - 修正坐标映射
-        # u_center: 水平方向坐标，对应j索引(列)
-        # v_center: 垂直方向坐标，对应i索引(行)
-        
+        # 7. Calculate u_center and v_center
         # 扩展U, V, delta_u, delta_v到网格形状
         U_expanded = U.view(N, 1, 1)  # (N, 1, 1) - 水平半宽
         V_expanded = V.view(N, 1, 1)  # (N, 1, 1) - 垂直半宽
         delta_u_expanded = delta_u.view(N, 1, 1)  # (N, 1, 1) - 水平步长
         delta_v_expanded = delta_v.view(N, 1, 1)  # (N, 1, 1) - 垂直步长
         
-        # 计算中心坐标 - 修正垂直方向映射
-        # j对应水平方向(u)，从左到右
+        # 计算中心坐标
         j_plus_half = j_grid + 0.5  # 水平方向网格中心
         
         # i对应垂直方向(v)，反转垂直方向索引，确保从上到下
-        # grid_size-1 - i_grid 确保i=0对应BFOV顶部，i=13对应BFOV底部
         vertical_idx = (grid_size - 1 - i_grid) + 0.5  # 垂直方向网格中心（已反转）
         
         # 水平方向(u): 从左到右
@@ -247,18 +265,18 @@ class SingleRoIExtractor(BaseRoIExtractor):
         # 垂直方向(v): 从上到下
         v_center = -V_expanded + vertical_idx.unsqueeze(0) * delta_v_expanded  # (N, 14, 14)
         
-        # 7. Expand basis vectors to match grid size
+        # 8. Expand basis vectors to match grid size
         c_expand = c.unsqueeze(1).unsqueeze(1).expand(N, grid_size, grid_size, 3)  # (N, 14, 14, 3)
-        e_u_expand = lon_dir.unsqueeze(1).unsqueeze(1).expand(N, grid_size, grid_size, 3)  # (N, 14, 14, 3)
-        e_v_expand = lat_dir.unsqueeze(1).unsqueeze(1).expand(N, grid_size, grid_size, 3)  # (N, 14, 14, 3)
+        e_u_expand = lon_dir_rot.unsqueeze(1).unsqueeze(1).expand(N, grid_size, grid_size, 3)  # (N, 14, 14, 3)
+        e_v_expand = lat_dir_rot.unsqueeze(1).unsqueeze(1).expand(N, grid_size, grid_size, 3)  # (N, 14, 14, 3)
         
-        # 8. Calculate points on tangent plane - same as numpy version
+        # 9. Calculate points on tangent plane
         x_plane = c_expand + u_center.unsqueeze(-1) * e_u_expand + v_center.unsqueeze(-1) * e_v_expand  # (N, 14, 14, 3)
         
-        # 9. Project back to unit sphere - same as numpy version
+        # 10. Project back to unit sphere
         x_sphere = x_plane / torch.norm(x_plane, dim=-1, keepdim=True)  # (N, 14, 14, 3)
         
-        # 10. Convert spherical coordinates to lat/lon (degrees for ERP conversion)
+        # 11. Convert spherical coordinates to lat/lon (degrees for ERP conversion)
         x = x_sphere[..., 0]
         y = x_sphere[..., 1]
         z = x_sphere[..., 2]
@@ -273,15 +291,14 @@ class SingleRoIExtractor(BaseRoIExtractor):
         lat_deg = 90.0 - (theta * 180.0 / PI)
         lon_deg = phi * 180.0 / PI
         
-        # 11. Convert lat/lon to ERP coordinates - same as numpy version
+        # 12. Convert lat/lon to ERP coordinates
         erp_x = (lon_deg + 180.0) / 360.0 * erp_width
         erp_y = (90.0 - lat_deg) / 180.0 * erp_height
         
-        # 12. Stack to get final ERP points
+        # 13. Stack to get final ERP points
         erp_points = torch.stack([erp_x, erp_y], dim=-1)  # (N, 14, 14, 2)
         
         # 对erp_points添加小的L2正则化，提高数值稳定性
-        # 这有助于在反向传播时限制梯度大小
         erp_points = erp_points + (erp_points * 1e-6) * 0.01
         
         return erp_points

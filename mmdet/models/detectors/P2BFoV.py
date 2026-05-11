@@ -13,6 +13,13 @@ from mmdet.core.bbox.iou_calculators import bbox_overlaps
 from ..builder import build_head
 from sphdet.iou.sph_iou_api import sph2pob_efficient_iou
 
+# 三维旋转相关导入
+try:
+    from PANDORA.RoIoU.libs.tools import rotate_image, tools
+    HAS_PANDORA = True
+except ImportError:
+    HAS_PANDORA = False
+
 import sys
 import os
 
@@ -262,6 +269,13 @@ def gen_proposals_from_cfg(gt_points, proposal_cfg, img_meta):
         #将所有的proposal展平成一维列表，里面的每一个proposal都是[x1, y1, w1, h1]
         #没有抖动的话[N, 4]，抖动的话[N, 5, 4]
         base_proposals = base_proposals.reshape(-1, 4)
+        
+        # ========== 添加第五个维度（角度），设置为0 ==========
+        # BFoV扩展为5维：[theta, phi, fov_x, fov_y, angle]
+        num_proposals = base_proposals.shape[0]
+        angles = torch.zeros(num_proposals, 1, device=base_proposals.device)
+        base_proposals = torch.cat([base_proposals, angles], dim=1)  # 形状变为 [-1, 5]
+        
         proposals_valid = base_proposals.new_full(
             (*base_proposals.shape[:-1], 1), 1, dtype=torch.long).reshape(-1, 1)
         # 对坐标进行有效性筛选，但是我们前边已经验证了不筛选，这里直接append
@@ -269,22 +283,23 @@ def gen_proposals_from_cfg(gt_points, proposal_cfg, img_meta):
         
         base_proposal_list.append(base_proposals)
         # 输出返回的张量的形状和意义
-        # base_proposal_list: 列表，每个元素是一个张量，形状为[N, 5, 4]，N是批量大小，5是每个中心抖动后的5个提案，4是提案信息[x1, y1, w1, h1]
-        # proposals_valid_list: 列表，每个元素是一个张量，形状为[N, 5, 1]，N是批量大小，5是每个中心对应5个提案，1是是否有效（1表示有效，0表示无效）
+        # base_proposal_list: 列表，每个元素是一个张量，形状为[N, 5]，N是批量大小，5是提案信息[x1, y1, w1, h1, angle]
+        # proposals_valid_list: 列表，每个元素是一个张量，形状为[N, 1]，N是批量大小，1是是否有效（1表示有效，0表示无效）
     return base_proposal_list, proposals_valid_list,
 
 def gen_negative_proposals(gt_points, proposal_cfg, aug_generate_proposals, img_meta):
-    # aug_generate_proposals,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
+    # aug_generate_proposals,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 5]（5维BFoV）
     #gt_points,列表长度为N,每个元素为[gt_num_i, 2]
     num_neg_gen = proposal_cfg['gen_num_neg']
     if num_neg_gen == 0:
         return None, None
     neg_proposal_list = []
     neg_weight_list = []
+    # 遍历批次内的所有图片
     for i in range(len(gt_points)):
-        # aug_generate_proposals上一阶段生成的正样本提案
-        # pos_box是张量 [num_gt[i] * k * (1+4*S), 4]
-        pos_box = aug_generate_proposals[i]
+        # aug_generate_proposals上一阶段生成的正样本提案（5维）
+        # pos_box是张量 [num_gt[i] * k * (1+4*S), 4]，只取前4维用于IoU计算
+        pos_box = aug_generate_proposals[i][:, :4]
         #生成中心坐标水平方向在-pi到pi之间，垂直方向在-pi/2到pi/2之间的负提案
         #宽高分别在1-180之间
         # 1. 生成中心坐标（弧度）：水平(-π, π)，垂直(-π/2, π/2)
@@ -306,14 +321,21 @@ def gen_negative_proposals(gt_points, proposal_cfg, aug_generate_proposals, img_
 
         # 3. 拼接负提案并转移到目标设备
         # neg_bboxes是张量 [num_neg_gen, 4]
-        neg_bboxes = torch.stack([center_x, center_y, w, h], dim=1).to(gt_points[0].device)
-
+        neg_bboxes_4d = torch.stack([center_x, center_y, w, h], dim=1).to(gt_points[0].device)
+        
+        # ========== 添加第五个维度（角度），设置为0 ==========
+        # BFoV扩展为5维：[theta, phi, fov_x, fov_y, angle]
+        num_neg = neg_bboxes_4d.shape[0]
+        angles = torch.zeros(num_neg, 1, device=neg_bboxes_4d.device)
+        neg_bboxes = torch.cat([neg_bboxes_4d, angles], dim=1)  # 形状变为 [num_neg_gen, 5]
+        
+        # iou维度是[num_neg_gen, num_pos]
         iou = calculate_spherical_iou_gpu(neg_bboxes, pos_box)
 
         # [num_neg_gen, num_pos] （布尔值张量）类似有效性掩码
         neg_weight = ((iou < 0.3).sum(dim=1) == iou.shape[1])
-        # neg_bboxes是张量 [num_neg_gen, 4],
-        # neg_proposal_list最终形状为[N, num_neg_gen, 4]
+        # neg_bboxes是张量 [num_neg_gen, 5],
+        # neg_proposal_list最终形状为[N, num_neg_gen, 5]
         neg_proposal_list.append(neg_bboxes)
         # neg_weight是张量 [num_neg_gen, 1]
         # neg_weight_list最终形状为[N, num_neg_gen, 1]
@@ -340,9 +362,9 @@ def fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg, img_meta, stage):
         for i in range(len(img_meta)):
             pps = []
             #上一个阶段的加权伪框，中心点加水平垂直方向的视场
-            #  'pseudo_boxes': list[torch.Tensor], 长度为N, 每个元素形状: [num_gt[i], 4], 数据类型: float32， 伪真实框列表，用于下一阶段训练
-            #base_boxes: 形状为 [num_gt[i], 4]
-            base_boxes = pseudo_boxes[i]
+            #  'pseudo_boxes': list[torch.Tensor], 长度为N, 每个元素形状: [num_gt[i], 5], 数据类型: float32， 伪真实框列表，用于下一阶段训练
+            #base_boxes: 形状为 [num_gt[i], 4]，只取前4维（theta, phi, fov_x, fov_y）
+            base_boxes = pseudo_boxes[i][:, :4]  # 只使用前4维，不包含角度
             
             for ratio_w in base_ratios:
                 for ratio_h in base_ratios:
@@ -490,9 +512,16 @@ def fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg, img_meta, stage):
             total_proposals = num_gt_i * k * s
 
 
-            proposal_list.append(pps_new.reshape(-1, 4))
+            # ========== 添加第五个维度（角度），设置为0 ==========
+            # BFoV扩展为5维：[theta, phi, fov_x, fov_y, angle]
+            pps_new_reshaped = pps_new.reshape(-1, 4)
+            num_proposals = pps_new_reshaped.shape[0]
+            angles = torch.zeros(num_proposals, 1, device=pps_new_reshaped.device)
+            pps_new_reshaped = torch.cat([pps_new_reshaped, angles], dim=1)  # 形状变为 [-1, 5]
+            
+            proposal_list.append(pps_new_reshaped)
             # 最终输出结果
-            # proposal_list,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
+            # proposal_list,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 5]
             # proposals_valid_list: 列表长度为N,每个元素为[num_gt[i], k, 1+4*S, 1]
             proposals_valid_list
     return proposal_list, proposals_valid_list
@@ -501,17 +530,19 @@ def fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg, img_meta, stage):
 def calculate_spherical_iou_gpu(pseudo_boxes, gt_bfov, device=None, sph_calculator=None):
     """
     计算球面矩形 IoU，使用 sph2pob_efficient_iou 方法
-    支持无角度的球面矩形：[theta, phi, fov_x, fov_y]
+    支持4维或5维的球面矩形：
+    - 4维：[theta, phi, fov_x, fov_y]
+    - 5维：[theta, phi, fov_x, fov_y, angle]
     与 bbox_overlaps 保持一致的输出形状：[N, M]
     
     Args:
         pseudo_boxes: 伪框，格式：
-            - 形状：(N, 4)
-            - 格式：[theta, phi, fov_x, fov_y]
+            - 形状：(N, 4) 或 (N, 5)
+            - 格式：[theta, phi, fov_x, fov_y] 或 [theta, phi, fov_x, fov_y, angle]
             - 类型：torch.Tensor 或 numpy.ndarray
         gt_bfov: 真实框，格式：
-            - 形状：(M, 4)
-            - 格式：[theta, phi, fov_x, fov_y]
+            - 形状：(M, 4) 或 (M, 5)
+            - 格式：[theta, phi, fov_x, fov_y] 或 [theta, phi, fov_x, fov_y, angle]
             - 类型：torch.Tensor 或 numpy.ndarray
         device: 输出设备，默认与 pseudo_boxes 相同
         sph_calculator: 未使用，为保持接口一致而保留
@@ -546,14 +577,25 @@ def calculate_spherical_iou_gpu(pseudo_boxes, gt_bfov, device=None, sph_calculat
     # 3. 获取输入形状
     assert len(pseudo_boxes_tensor.shape) == 2, f"pseudo_boxes must be 2D, got {len(pseudo_boxes_tensor.shape)}D"
     assert len(gt_bfov_tensor.shape) == 2, f"gt_bfov must be 2D, got {len(gt_bfov_tensor.shape)}D"
-    N, _ = pseudo_boxes_tensor.shape
-    M, _ = gt_bfov_tensor.shape
+    N, pseudo_dim = pseudo_boxes_tensor.shape
+    M, gt_dim = gt_bfov_tensor.shape
     
-    # 4. 将弧度转换为度
+    # 4. 确保维度一致（支持4维和5维混合输入）
+    if pseudo_dim != gt_dim:
+        if pseudo_dim == 5 and gt_dim == 4:
+            # gt_bfov 是4维，添加角度维度（设置为0）
+            angles = torch.zeros(M, 1, device=gt_bfov_tensor.device)
+            gt_bfov_tensor = torch.cat([gt_bfov_tensor, angles], dim=1)
+        elif pseudo_dim == 4 and gt_dim == 5:
+            # pseudo_boxes 是4维，添加角度维度（设置为0）
+            angles = torch.zeros(N, 1, device=pseudo_boxes_tensor.device)
+            pseudo_boxes_tensor = torch.cat([pseudo_boxes_tensor, angles], dim=1)
+    
+    # 5. 将弧度转换为度
     pseudo_boxes_deg = torch.rad2deg(pseudo_boxes_tensor)
     gt_bfov_deg = torch.rad2deg(gt_bfov_tensor)
     
-    # 5. 使用 sph2pob_efficient_iou 计算 IoU
+    # 6. 使用 sph2pob_efficient_iou 计算 IoU
     # 由于 sph2pob_efficient_iou 支持 is_aligned=False，直接计算 (N, M) 的 IoU 矩阵
     # print(f"开始计算球面IoU (GPU)，共{N}个检测框和{M}个GT框")
     iou_tensor = sph2pob_efficient_iou(pseudo_boxes_deg, gt_bfov_deg, is_aligned=False)
@@ -605,6 +647,300 @@ class P2BFoV(TwoStageDetector):
         if bbox_head is not None:
             self.with_bbox_head = True
             self.bbox_head = build_head(bbox_head)
+        
+        # 初始化一致性损失
+        self.loss_diff_view = torch.nn.SmoothL1Loss()
+    
+    def rotate_erp_3d_and_annotations(self, img, img_metas, gt_bfov, gt_points, rotation_angles):
+        """
+        对ERP图像进行三维旋转并变换对应的标注
+        旋转角度定义（与rotate_image_3d一致）：
+        - Roll: 绕X轴旋转（左右倾斜）- 正值：图像左侧向上倾斜
+        - Pitch: 绕Y轴旋转（上下倾斜）- 正值：图像顶部向后倾斜
+        - Yaw: 绕Z轴旋转（水平旋转）- 正值：顺时针旋转
+        
+        Args:
+            img: 输入图像张量，形状 [B, C, H, W]
+            img_metas: 图像元数据列表
+            gt_bfov: 原始BFoV标注，列表，每个元素形状 [num_gt, 5]（弧度制）
+            gt_points: 原始点坐标，列表，每个元素形状 [num_gt, 2]（弧度制）
+            rotation_angles: 旋转角度列表 [roll, pitch, yaw]（度数）
+        
+        Returns:
+            img_rotate_view: 旋转后的图像
+            img_metas_rotate_view: 旋转后的图像元数据
+            gt_bfov_rotate_view: 旋转后的BFoV标注
+            gt_points_rotate_view: 旋转后的点坐标
+        """
+        roll, pitch, yaw = rotation_angles
+        erp_h = img_metas[0]['img_shape'][0]
+        erp_w = img_metas[0]['img_shape'][1]
+        
+        # 1. 旋转图像
+        img_np = img.permute(0, 2, 3, 1).cpu().numpy()
+        img_rotate_np = []
+        
+        for i in range(img_np.shape[0]):
+            img_single = img_np[i].copy()
+            mean = np.array([123.675, 116.28, 103.53])
+            std = np.array([58.395, 57.12, 57.375])
+            img_single = (img_single * std) + mean
+            img_single = np.clip(img_single, 0, 255).astype('uint8')
+            
+            if HAS_PANDORA:
+                if abs(roll) > 1e-6:
+                    img_single = rotate_image(img_single, roll, np.array([1, 0, 0], dtype=np.float64))
+                if abs(pitch) > 1e-6:
+                    img_single = rotate_image(img_single, pitch, np.array([0, 1, 0], dtype=np.float64))
+                if abs(yaw) > 1e-6:
+                    img_single = rotate_image(img_single, yaw, np.array([0, 0, 1], dtype=np.float64))
+            
+            img_single = (img_single - mean) / std
+            img_rotate_np.append(img_single)
+        
+        img_rotate_np = np.stack(img_rotate_np, axis=0)
+        img_rotate_view = torch.tensor(img_rotate_np, dtype=torch.float32).permute(0, 3, 1, 2).to(img.device)
+        
+        # 2. 更新图像元数据
+        img_metas_rotate_view = copy.deepcopy(img_metas)
+        for meta in img_metas_rotate_view:
+            meta['is_rotated'] = True
+            meta['rotation_angles'] = rotation_angles
+        
+        # 3. 变换BFoV标注
+        gt_bfov_rotate_view = []
+        if HAS_PANDORA:
+            t = tools(erp_w, erp_h)
+            
+            for bfov in gt_bfov:
+                if bfov is not None and len(bfov) > 0:
+                    rotated_bfov = bfov.clone()
+                    num_boxes = bfov.shape[0]
+                    
+                    for i in range(num_boxes):
+                        theta = bfov[i, 0].item()
+                        phi = bfov[i, 1].item()
+                        fov_x = bfov[i, 2].item()
+                        fov_y = bfov[i, 3].item()
+                        angle = bfov[i, 4].item() if bfov.shape[1] >= 5 else 0
+                        
+                        center_x = theta * 180 / math.pi
+                        center_y = phi * 180 / math.pi
+                        fov_x_deg = fov_x * 180 / math.pi
+                        fov_y_deg = fov_y * 180 / math.pi
+                        angle_deg = angle * 180 / math.pi
+                        
+                        rbfov_params = np.array([center_x, center_y, fov_x_deg, fov_y_deg, angle_deg])
+                        new_rbfov = self._transform_rbfov_params(rbfov_params, rotation_angles, erp_w, erp_h)
+                        
+                        rotated_bfov[i, 0] = new_rbfov[0] * math.pi / 180
+                        rotated_bfov[i, 1] = new_rbfov[1] * math.pi / 180
+                        rotated_bfov[i, 2] = new_rbfov[2] * math.pi / 180
+                        rotated_bfov[i, 3] = new_rbfov[3] * math.pi / 180
+                        if bfov.shape[1] >= 5:
+                            rotated_bfov[i, 4] = new_rbfov[4] * math.pi / 180
+                    
+                    gt_bfov_rotate_view.append(rotated_bfov)
+                else:
+                    gt_bfov_rotate_view.append(bfov)
+        else:
+            for bfov in gt_bfov:
+                if bfov is not None and len(bfov) > 0:
+                    rotated_bfov = bfov.clone()
+                    yaw_angle = yaw * math.pi / 180
+                    rotated_bfov[:, 0] = torch.remainder(rotated_bfov[:, 0] + PI + yaw_angle, 2 * PI) - PI
+                    gt_bfov_rotate_view.append(rotated_bfov)
+                else:
+                    gt_bfov_rotate_view.append(bfov)
+        
+        # 4. 变换点坐标
+        gt_points_rotate_view = []
+        for points in gt_points:
+            if points is not None and len(points) > 0:
+                rotated_points = points.clone()
+                yaw_angle = yaw * math.pi / 180
+                rotated_points[:, 0] = torch.remainder(rotated_points[:, 0] + PI + yaw_angle, 2 * PI) - PI
+                gt_points_rotate_view.append(rotated_points)
+            else:
+                gt_points_rotate_view.append(points)
+        
+        return img_rotate_view, img_metas_rotate_view, gt_bfov_rotate_view, gt_points_rotate_view
+    
+    def _transform_rbfov_params(self, rbfov_params, rotation_angles, erp_w, erp_h):
+        """
+        应用三维旋转变换RBFoV参数（参考rotate_erp_3d.py的Case 5逻辑）
+        
+        Args:
+            rbfov_params: [center_x, center_y, fov_x, fov_y, angle]（度数）
+            rotation_angles: [roll, pitch, yaw]（度数）
+            erp_w: ERP图像宽度
+            erp_h: ERP图像高度
+        
+        Returns:
+            new_rbfov: 变换后的RBFoV参数（度数）
+        """
+        center_x, center_y, fov_x, fov_y, angle = rbfov_params
+        roll, pitch, yaw = rotation_angles
+        
+        if not HAS_PANDORA:
+            return rbfov_params
+        
+        t = tools(erp_w, erp_h)
+        
+        roll_t = roll
+        pitch_t = -pitch
+        yaw_t = yaw
+        
+        center_px = (center_x + 180) / 360 * erp_w
+        center_py = (90 - center_y) / 180 * erp_h
+        
+        center_xyz = np.array(t.pxpy2xyz([center_px + 0.5, center_py + 0.5]))
+        center_xyz = center_xyz / np.linalg.norm(center_xyz)
+        
+        if abs(roll_t) > 1e-6:
+            center_xyz = np.array(t.roll_T(np.array([1, 0, 0]), center_xyz, roll_t))
+        if abs(pitch_t) > 1e-6:
+            center_xyz = np.array(t.roll_T(np.array([0, 1, 0]), center_xyz, pitch_t))
+        if abs(yaw_t) > 1e-6:
+            center_xyz = np.array(t.roll_T(np.array([0, 0, 1]), center_xyz, yaw_t))
+        
+        center_xyz = center_xyz / np.linalg.norm(center_xyz)
+        
+        px_new, py_new = t.xyz2pxpy(center_xyz)
+        new_center_x = (px_new / erp_w) * 360 - 180
+        new_center_y = 90 - (py_new / erp_h) * 180
+        
+        orig_xyz = np.array(t.pxpy2xyz([center_px + 0.5, center_py + 0.5]))
+        orig_xyz = orig_xyz / np.linalg.norm(orig_xyz)
+        
+        east_orig = np.cross([0, 1, 0], orig_xyz)
+        if np.linalg.norm(east_orig) < 1e-10:
+            east_orig = np.array([1, 0, 0])
+        else:
+            east_orig = east_orig / np.linalg.norm(east_orig)
+        
+        north_orig = np.cross(orig_xyz, east_orig)
+        north_orig = north_orig / np.linalg.norm(north_orig)
+        
+        rad_angle = np.deg2rad(angle)
+        dir_vec = np.cos(rad_angle) * east_orig + np.sin(rad_angle) * north_orig
+        
+        if abs(roll_t) > 1e-6:
+            dir_vec = np.array(t.roll_T(np.array([1, 0, 0]), dir_vec, roll_t))
+        if abs(pitch_t) > 1e-6:
+            dir_vec = np.array(t.roll_T(np.array([0, 1, 0]), dir_vec, pitch_t))
+        if abs(yaw_t) > 1e-6:
+            dir_vec = np.array(t.roll_T(np.array([0, 0, 1]), dir_vec, yaw_t))
+        
+        dir_vec = dir_vec / np.linalg.norm(dir_vec)
+        
+        east_new = np.cross([0, 1, 0], center_xyz)
+        if np.linalg.norm(east_new) < 1e-10:
+            east_new = np.array([1, 0, 0])
+        else:
+            east_new = east_new / np.linalg.norm(east_new)
+        
+        north_new = np.cross(center_xyz, east_new)
+        north_new = north_new / np.linalg.norm(north_new)
+        
+        dot_e = np.dot(dir_vec, east_new)
+        dot_n = np.dot(dir_vec, north_new)
+        
+        new_angle = np.rad2deg(np.arctan2(dot_n, dot_e))
+        new_angle = (new_angle + 180) % 360 - 180
+        
+        return np.array([new_center_x, new_center_y, fov_x, fov_y, new_angle])
+    
+    def calculate_move_view_consistency_loss(self, bbox_results_original, bbox_results_moved, 
+                                            proposals_valid, stage=0):
+        """
+        计算滚动视图一致性损失
+        """
+        import torch.nn.functional as F
+        
+        # 提取分类得分和实例得分
+        cls_score_v1 = bbox_results_original['cls_score']
+        ins_score_v1 = bbox_results_original['ins_score']
+        cls_score_v2 = bbox_results_moved['cls_score']  
+        ins_score_v2 = bbox_results_moved['ins_score']
+        
+        # 应用有效性掩码
+        proposal_valid = torch.cat(proposals_valid).reshape(cls_score_v1.size(0), -1, 1)
+        
+        # 概率计算（根据阶段选择激活函数）
+        if stage < 1:
+            cls_score_v1_prob = cls_score_v1.softmax(dim=-1)
+            cls_score_v2_prob = cls_score_v2.softmax(dim=-1)
+        else:
+            cls_score_v1_prob = cls_score_v1.sigmoid()
+            cls_score_v2_prob = cls_score_v2.sigmoid()
+        
+        # 应用掩码
+        cls_score_v1_prob = cls_score_v1_prob * proposal_valid
+        cls_score_v2_prob = cls_score_v2_prob * proposal_valid
+        
+        # 实例得分处理
+        ins_score_v1_prob = ins_score_v1.softmax(dim=-1) * proposal_valid
+        ins_score_v2_prob = ins_score_v2.softmax(dim=-1) * proposal_valid
+        ins_score_v1_prob = F.normalize(ins_score_v1_prob, dim=-1, p=1)
+        ins_score_v2_prob = F.normalize(ins_score_v2_prob, dim=-1, p=1)
+        
+        # 综合概率得分
+        prob_v1 = (cls_score_v1_prob * ins_score_v1_prob).sum(dim=1)
+        prob_v2 = (cls_score_v2_prob * ins_score_v2_prob).sum(dim=1)
+        
+        # 计算余弦相似度差异（一致性损失）
+        cls_similarity = 1 - F.cosine_similarity(cls_score_v1_prob, cls_score_v2_prob, dim=1, eps=1e-6)
+        ins_similarity = 1 - F.cosine_similarity(ins_score_v1_prob, ins_score_v2_prob, dim=1, eps=1e-6)
+        score_similarity = 1 - F.cosine_similarity(prob_v1, prob_v2, dim=1, eps=1e-6)
+        
+        return cls_similarity, ins_similarity, score_similarity
+    
+    def calculate_rotate_view_consistency_loss(self, bbox_results_original, bbox_results_rotated, 
+                                               proposals_valid, stage=0):
+        """
+        计算旋转视图一致性损失（与滚动视图一致性损失逻辑相同）
+        """
+        import torch.nn.functional as F
+        
+        # 提取分类得分和实例得分
+        cls_score_v1 = bbox_results_original['cls_score']
+        ins_score_v1 = bbox_results_original['ins_score']
+        cls_score_v2 = bbox_results_rotated['cls_score']  
+        ins_score_v2 = bbox_results_rotated['ins_score']
+        
+        # 应用有效性掩码
+        proposal_valid = torch.cat(proposals_valid).reshape(cls_score_v1.size(0), -1, 1)
+        
+        # 概率计算（根据阶段选择激活函数）
+        if stage < 1:
+            cls_score_v1_prob = cls_score_v1.softmax(dim=-1)
+            cls_score_v2_prob = cls_score_v2.softmax(dim=-1)
+        else:
+            cls_score_v1_prob = cls_score_v1.sigmoid()
+            cls_score_v2_prob = cls_score_v2.sigmoid()
+        
+        # 应用掩码
+        cls_score_v1_prob = cls_score_v1_prob * proposal_valid
+        cls_score_v2_prob = cls_score_v2_prob * proposal_valid
+        
+        # 实例得分处理
+        ins_score_v1_prob = ins_score_v1.softmax(dim=-1) * proposal_valid
+        ins_score_v2_prob = ins_score_v2.softmax(dim=-1) * proposal_valid
+        ins_score_v1_prob = F.normalize(ins_score_v1_prob, dim=-1, p=1)
+        ins_score_v2_prob = F.normalize(ins_score_v2_prob, dim=-1, p=1)
+        
+        # 综合概率得分
+        prob_v1 = (cls_score_v1_prob * ins_score_v1_prob).sum(dim=1)
+        prob_v2 = (cls_score_v2_prob * ins_score_v2_prob).sum(dim=1)
+        
+        # 计算余弦相似度差异（一致性损失）
+        cls_similarity = 1 - F.cosine_similarity(cls_score_v1_prob, cls_score_v2_prob, dim=1, eps=1e-6)
+        ins_similarity = 1 - F.cosine_similarity(ins_score_v1_prob, ins_score_v2_prob, dim=1, eps=1e-6)
+        score_similarity = 1 - F.cosine_similarity(prob_v1, prob_v2, dim=1, eps=1e-6)
+        
+        return cls_similarity, ins_similarity, score_similarity
+
     ###这里可能需要改一下train.py因为添加了新的数据输入
     def forward_train(self,
                       img,
@@ -617,11 +953,37 @@ class P2BFoV(TwoStageDetector):
                       gt_bboxes_ignore=None,
                       gt_masks=None,
                       proposals=None,
+                      is_3d_rotate=True,  # 是否启用三维球面旋转增强
+                      roll_max=30,  # Roll最大角度（绕X轴，左右倾斜）- 正值：图像左侧向上倾斜
+                      pitch_max=30,  # Pitch最大角度（绕Y轴，上下倾斜）- 正值：图像顶部向后倾斜
+                      yaw_max=30,  # Yaw最大角度（绕Z轴，水平旋转）- 正值：顺时针旋转
+                      rotate_ratio=0.5,  # 旋转比例系数，随机角度范围为 [-max*ratio, max*ratio]
                       **kwargs):
 
-
-        # 开始特征提取
         x = self.extract_feat(img)  
+
+        # 滚动增强处理
+        x_rotate_view = None
+        img_metas_rotate_view = None
+        gt_bfov_rotate_view = None
+        gt_points_rotate_view = None
+        
+        if is_3d_rotate:
+            # 随机生成三维旋转角度（基于最大角度和比例系数）
+            # Roll: 绕X轴旋转（左右倾斜）
+            # Pitch: 绕Y轴旋转（上下倾斜）
+            # Yaw: 绕Z轴旋转（水平旋转）
+            roll_angle = (torch.rand(1) * 2 - 1) * roll_max * rotate_ratio
+            pitch_angle = (torch.rand(1) * 2 - 1) * pitch_max * rotate_ratio
+            yaw_angle = (torch.rand(1) * 2 - 1) * yaw_max * rotate_ratio
+            rotation_angles = [roll_angle.item(), pitch_angle.item(), yaw_angle.item()]
+            
+            # 生成旋转视图
+            img_rotate_view, img_metas_rotate_view, gt_bfov_rotate_view, gt_points_rotate_view = \
+                self.rotate_erp_3d_and_annotations(img, img_metas, gt_bfov, gt_points, rotation_angles)
+            
+            # 提取旋转视图特征
+            x_rotate_view = self.extract_feat(img_rotate_view)
 
         #这里需要注意下全景ERP特征提取的时候和普通平面不一样，要么两边padding或者改变卷积核
         #下面两个是初始提案和精细提案的配置信息
@@ -630,15 +992,6 @@ class P2BFoV(TwoStageDetector):
         fine_proposal_cfg = self.train_cfg.get('fine_proposal',
                                                self.test_cfg.rpn)
         losses = dict()#定义损失字典函数
-        
-        # if len(img_metas) > 0:
-            # h,w = img_metas[0]['pad_shape'][0],img_metas[0]['pad_shape'][1]
-            # meta = img_metas[0]
-            # print(f"ori_shape: {meta['ori_shape']}")
-            # print(f"img_shape: {meta['img_shape']}") 
-            # print(f"pad_shape: {meta['pad_shape']}")
-            # print(f"scale_factor: {meta['scale_factor']}")
-            # print(f"h_w: {meta['pad_shape'][0]}/{meta['pad_shape'][1]}")
 
         for stage in range(self.num_stages):
             if stage == 0:
@@ -649,6 +1002,8 @@ class P2BFoV(TwoStageDetector):
 
                 generate_proposals, proposals_valid_list = gen_proposals_from_cfg(gt_points, base_proposal_cfg,
                                                                                   img_meta=img_metas)
+                # gen_proposals_from_cfg 已返回5维BFoV: [theta, phi, fov_x, fov_y, angle]
+                
                 # 生成一个与真实标签数量相同的张量存储初始权重为1
                 dynamic_weight = torch.cat(gt_labels).new_ones(len(torch.cat(gt_labels)))
                 # 阶段0暂时不生成负提案和负提案的权重
@@ -656,27 +1011,39 @@ class P2BFoV(TwoStageDetector):
                 # 下一阶段的伪提案
                 #generate_proposals长度为N列表，每个元素是一个张量，形状为[num_gt[i]*M, 4]
                 pseudo_boxes = generate_proposals
+                
 
-
-
-
+                # 旋转视图的提案生成（如果启用）
+                if is_3d_rotate:
+                    generate_proposals_rotate_view, proposals_valid_list_rotate_view = gen_proposals_from_cfg(
+                        gt_points_rotate_view, base_proposal_cfg, img_meta=img_metas_rotate_view)
                     
+                    dynamic_weight_rotate_view = torch.cat(gt_labels).new_ones(len(torch.cat(gt_labels)))
+                    neg_proposal_list_rotate_view, neg_weight_list_rotate_view = None, None
+                    pseudo_boxes_rotate_view = generate_proposals_rotate_view
+      
             else:
-                #  'pseudo_boxes': list[torch.Tensor], 长度为N, 每个元素形状: [num_gt[i], 4], 数据类型: float32， 伪真实框列表，用于下一阶段训练
-                # proposal_list,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
+                #  'pseudo_boxes': list[torch.Tensor], 长度为N, 每个元素形状: [num_gt[i], 5], 数据类型: float32， 伪真实框列表，用于下一阶段训练
+                # proposal_list,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 5]
                 # proposals_valid_list: 列表长度为N,每个元素为[num_gt[i], k, 1+4*S, 1]
                 generate_proposals, proposals_valid_list = fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg,
                                                                                    img_meta=img_metas,
                                                                                    stage=stage)
+               
+
                 # 生成负提案及其权重
-                # generate_proposals,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 4]
-                # neg_proposal_list最终形状为[N, num_neg_gen, 4]
+                # generate_proposals,列表长度为N,每个元素为[num_gt[i] * k * (1+4*S), 5]
+                # neg_proposal_list最终形状为[N, num_neg_gen, 5]
                 # neg_weight_list最终形状为[N, num_neg_gen, 1]
                 neg_proposal_list, neg_weight_list = gen_negative_proposals(gt_points, fine_proposal_cfg,
                                                                             generate_proposals,
                                                                             img_meta=img_metas)
+                # gen_negative_proposals 已返回5维BFoV: [theta, phi, fov_x, fov_y, angle]
             
-            roi_losses, pseudo_boxes, dynamic_weight = self.roi_head.forward_train(stage, x, img_metas,
+
+
+
+            roi_losses, pseudo_boxes, dynamic_weight ,bbox_results = self.roi_head.forward_train(stage, x, img_metas,
                                                                                    pseudo_boxes,
                                                                                    generate_proposals,
                                                                                    proposals_valid_list,
@@ -689,6 +1056,45 @@ class P2BFoV(TwoStageDetector):
                                                                                    gt_points,
                                                                                    **kwargs
                                                                                     )
+            
+            # 旋转视图训练和一致性损失计算（仅在阶段0且启用旋转增强时）
+            if is_3d_rotate and stage == 0:
+                roi_losses_rotate_view, pseudo_boxes_rotate_view, dynamic_weight_rotate_view ,\
+                    bbox_results_rotate_view = self.roi_head.forward_train(stage, x_rotate_view, img_metas_rotate_view,
+                                                                       pseudo_boxes_rotate_view,
+                                                                       generate_proposals_rotate_view,
+                                                                       proposals_valid_list_rotate_view,
+                                                                       neg_proposal_list_rotate_view, neg_weight_list_rotate_view,
+                                                                       gt_true_bboxes, gt_labels,
+                                                                       dynamic_weight_rotate_view,
+                                                                       gt_bboxes_ignore, gt_masks,
+                                                                       gt_bfov_rotate_view,
+                                                                       gt_bboxes,
+                                                                       gt_points_rotate_view,
+                                                                       **kwargs
+                                                                        )
+                
+                # 计算旋转一致性损失
+                cls_sim, ins_sim, score_sim = self.calculate_rotate_view_consistency_loss(
+                    bbox_results, bbox_results_rotate_view, proposals_valid_list_rotate_view, stage=0)
+                
+                # 使用SmoothL1Loss计算一致性损失
+                loss_rotate_cls = 1.0 * self.loss_diff_view(cls_sim, torch.zeros_like(cls_sim))
+                loss_rotate_ins = 2.0 * self.loss_diff_view(ins_sim, torch.zeros_like(ins_sim))
+                
+                # 添加到损失字典
+                losses[f'stage{stage}_loss_RVC_cls'] = loss_rotate_cls  # Rotate View Consistency
+                losses[f'stage{stage}_loss_RVC_ins'] = loss_rotate_ins
+                
+                # 添加旋转视图的MIL损失（可选）
+                for key, value in roi_losses_rotate_view.items():
+                    losses[f'stage{stage}_rotate_{key}'] = value
+
+            
+            
+            
+
+            
             if stage == 0:
                 pseudo_boxes_out = pseudo_boxes
                 dynamic_weight_out = dynamic_weight
@@ -714,8 +1120,13 @@ class P2BFoV(TwoStageDetector):
             else:
                 generate_proposals, proposals_valid_list = fine_proposals_from_cfg(pseudo_boxes, fine_proposal_cfg,
                                                                                    img_meta=img_metas, stage=stage)
-            # pseudo_bboxes = [i[:, :4] for i in det_bboxes]
-            #bbox_results ：嵌套列表，外层长度为N，中层长度为num_classes，最内层每个元素是一个张量，形状为[num_gt[i], 5]，5个值是： [x1, y1, w, h, score]
+                # fine_proposals_from_cfg 内部已自动添加角度维度（设置为0）
+            # gen_proposals_from_cfg 和 fine_proposals_from_cfg 均已返回5维BFoV: [theta, phi, fov_x, fov_y, angle]
+            
+
+            # BFoV已扩展为5维格式: [theta, phi, fov_x, fov_y, angle]
+            # generate_proposals 已经是5维格式，包含角度信息
+            # pseudo_boxes 返回也是5维格式，保留完整的角度信息供后续计算
             test_result, pseudo_boxes = self.roi_head.simple_test(stage,
                                                                   x, generate_proposals, proposals_valid_list,
                                                                   gt_bboxes,
@@ -727,6 +1138,7 @@ class P2BFoV(TwoStageDetector):
                                                                   rescale=rescale)
 
 
-        #bbox_results ：嵌套列表，外层长度为N，中层长度为num_classes，最内层每个元素是一个张量，形状为[num_gt[i], 5]，5个值是： [x1, y1, w, h, score]
-
+        # test_result ：嵌套列表，外层长度为N，中层长度为num_classes，最内层每个元素是一个张量，形状为[num_gt[i], 5]
+        # 5个值是： [theta, phi, fov_x, fov_y, score]，其中前4个是BFoV参数（不含角度）
+        
         return test_result

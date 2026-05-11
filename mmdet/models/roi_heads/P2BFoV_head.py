@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from mmdet.core import bbox2result, bbox2roi, build_assigner, build_sampler, multi_apply
+from mmdet.core import bbox2result, build_assigner, build_sampler, multi_apply
+from sphdet.bbox.box_formator import bbox2roi
 from ..builder import HEADS, build_head, build_roi_extractor
 from .standard_roi_head import StandardRoIHead
 from .cascade_roi_head import CascadeRoIHead
@@ -109,7 +110,7 @@ class P2BFoVHead(StandardRoIHead):
                                                     gt_bfov,gt_bboxes)
 
             losses.update(bbox_results['loss_instance_mil'])
-        return losses, bbox_results['pseudo_boxes'], bbox_results['dynamic_weight']
+        return losses, bbox_results['pseudo_boxes'], bbox_results['dynamic_weight'],bbox_results
         # bbox_results 是一个字典，包含目标检测的核心结果数据
             # 结构如下：
             # {
@@ -175,11 +176,17 @@ class P2BFoVHead(StandardRoIHead):
         device = proposals_list[0].device if proposals_list else 'cpu'        
         # 修复：从列表第一个元素获取设备
         # # 在关键位置添加设备检查
-        # proposals_list是一个列表（对应一个批次内的各个图像），每个元素是一个张量，这个张量是[num_gt[i]，M, 4]，num_gt[i]表示第i个图像有多少个gt
-        # bboxes_list: 边界框列表，每个元素是张量[num_gt[i]*M, 4]，M是每个图像的掩码数量
+        # proposals_list是一个列表（对应一个批次内的各个图像），每个元素是一个张量，这个张量是[num_gt[i]，M, 5]，num_gt[i]表示第i个图像有多少个gt
+        # bboxes_list: 边界框列表，每个元素是张量[num_gt[i]*M, 5]，M是每个图像的掩码数量
         #这一部分是主体保留关键需要改动的
-        bboxes_list =proposals_list
-        rois = bbox2roi(bboxes_list)
+        bboxes_list = proposals_list
+        
+        # 自动检测边界框维度（支持4维或5维BFoV）
+        if len(bboxes_list) > 0 and bboxes_list[0].ndim > 0:
+            box_version = bboxes_list[0].shape[-1]
+        else:
+            box_version = 5  # 默认使用5维
+        rois = bbox2roi(bboxes_list, box_version=box_version)
 
         # 🔑 关键修改：调用_bbox_forward_single函数（新功能）
         bbox_results = self._bbox_forward_single(x, rois, gt_points, stage)
@@ -204,7 +211,12 @@ class P2BFoVHead(StandardRoIHead):
 
             neg_bboxes_list = neg_proposal_list
 
-            neg_rois = bbox2roi(neg_bboxes_list)
+            # 自动检测负提案边界框维度（支持4维或5维BFoV）
+            if len(neg_bboxes_list) > 0 and neg_bboxes_list[0].ndim > 0:
+                neg_box_version = neg_bboxes_list[0].shape[-1]
+            else:
+                neg_box_version = 5  # 默认使用5维
+            neg_rois = bbox2roi(neg_bboxes_list, box_version=neg_box_version)
 
             neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage)
 
@@ -219,8 +231,11 @@ class P2BFoVHead(StandardRoIHead):
         reg_box = bbox_results['bbox_pred']
 
         if reg_box is not None:
-            boxes_pred = self.bbox_head.bbox_coder.decode(torch.cat(proposals_list).reshape(-1, 4),
-                                                          reg_box.reshape(-1, 4)).reshape(reg_box.shape)
+            # 自动检测边界框维度（支持4维或5维BFoV）
+            proposals_cat = torch.cat(proposals_list)
+            box_dim = proposals_cat.shape[-1]
+            boxes_pred = self.bbox_head.bbox_coder.decode(proposals_cat.reshape(-1, box_dim),
+                                                          reg_box.reshape(-1, box_dim)).reshape(reg_box.shape)
         else:
             boxes_pred = None
 
@@ -229,9 +244,9 @@ class P2BFoVHead(StandardRoIHead):
             retrain_weights = None ##TO
         else:
             retrain_weights = None
-        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
+        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，作为下一个阶段的伪gt框
         # - mean_ious ：列表，长度为4，每个元素为一个尺度的球面IoU
-        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 4]，球面中心加水平垂直视场角度，保留得分高的k个提案用作后续生成精细提案
+        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 5]，球面中心加水平垂直视场角度加角度，保留得分高的k个提案用作后续生成精细提案
         # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k]   
         pseudo_boxes, mean_ious, filtered_boxes, filtered_scores, dynamic_weight = self.merge_box(bbox_results,
                                                                                                   proposals_list_to_merge,
@@ -369,7 +384,9 @@ class P2BFoVHead(StandardRoIHead):
         # 直接设置merge_mode，移除冗余条件判断
         merge_mode = 'weighted_clsins_topk'
 
-        proposals = proposals.reshape(cls_score.shape[0], cls_score.shape[1], 4)
+        # 支持5维BFoV: [theta, phi, fov_x, fov_y, angle]
+        box_dim = proposals.shape[-1]
+        proposals = proposals.reshape(cls_score.shape[0], cls_score.shape[1], box_dim)
         h, w, c = img_metas['img_shape']
         num_gt, num_gen = proposals.shape[:2]
 
@@ -379,16 +396,16 @@ class P2BFoVHead(StandardRoIHead):
             else:
                 k = self.topk2
             dynamic_weight_, idx = dynamic_weight.topk(k=k, dim=1)
-            weight = dynamic_weight_.unsqueeze(2).repeat([1, 1, 4])
+            weight = dynamic_weight_.unsqueeze(2).repeat([1, 1, box_dim])
             weight = weight / (weight.sum(dim=1, keepdim=True) + 1e-8)
             
             # Get filtered boxes
             filtered_boxes = proposals[torch.arange(proposals.shape[0]).unsqueeze(1), idx]
             
             # Process coordinates: lon/lat to 3D then weight merge
-            # Extract lon/lat (first two dimensions) and fovx/fovy (last two dimensions)
+            # Extract lon/lat (first two dimensions) and fovx/fovy (next two dimensions)
             lon_lat = filtered_boxes[:, :, :2]  # (num_gt, k, 2)
-            fovs = filtered_boxes[:, :, 2:]  # (num_gt, k, 2)
+            fovs = filtered_boxes[:, :, 2:4]  # (num_gt, k, 2)
             
             # Convert lon/lat to 3D spherical coordinates
             lon = lon_lat[:, :, 0]  # longitude in radians
@@ -409,25 +426,31 @@ class P2BFoVHead(StandardRoIHead):
             lon_merged = torch.atan2(center_3d[:, 1], center_3d[:, 0])  # longitude in radians
             
             # Weighted merge for fovx/fovy
-            fovs_weighted = (fovs * weight[:, :, 2:]).sum(dim=1)  # (num_gt, 2)
+            fovs_weighted = (fovs * weight[:, :, 2:4]).sum(dim=1)  # (num_gt, 2)
             
-            # Combine to form final boxes
-            boxes = torch.cat([lon_merged.unsqueeze(1), lat_merged.unsqueeze(1), fovs_weighted], dim=1)
+            # Combine to form final boxes (5维BFoV: [theta, phi, fov_x, fov_y, angle])
+            if box_dim == 5:
+                # 角度维度取均值（通常都是0）
+                angles = filtered_boxes[:, :, 4].mean(dim=1, keepdim=True)  # (num_gt, 1)
+                boxes = torch.cat([lon_merged.unsqueeze(1), lat_merged.unsqueeze(1), fovs_weighted, angles], dim=1)
+            else:
+                boxes = torch.cat([lon_merged.unsqueeze(1), lat_merged.unsqueeze(1), fovs_weighted], dim=1)
             
             # 添加球面坐标约束，确保坐标在有效范围内
             # 只对经度和纬度部分进行约束
             lon_lat = boxes[:, :2]
             constrained_lon_lat = self.constrain_spherical_coords(lon_lat)
-            # 保留fovx和fovy部分
+            # 保留fovx、fovy和angle部分
             boxes = torch.cat([constrained_lon_lat, boxes[:, 2:]], dim=1)
 
             filtered_scores = dict(cls_score=cls_score[torch.arange(proposals.shape[0]).unsqueeze(1), idx],
                                 ins_score=ins_score[torch.arange(proposals.shape[0]).unsqueeze(1), idx],
                                 dynamic_weight=dynamic_weight_)
            
+
             
-            # - boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
-            # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 4]，球面中心加水平垂直视场角度，保留得分高的k个提案用作后续生成精细提案
+            # - boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，作为下一个阶段的伪gt框
+            # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 5]，球面中心加水平垂直视场角度加角度，保留得分高的k个提案用作后续生成精细提案
             # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k] 
 
             return boxes, filtered_boxes, filtered_scores
@@ -468,7 +491,7 @@ class P2BFoVHead(StandardRoIHead):
         stage_ = [stage for _ in range(len(cls_scores))]
         # 返回融合后的边界框和动态权重
         # proposal_list：列表，长度为N,批次提案每个元素对应一张图像
-        # proposal_list[i]：张量，形状[M*num_gt[i], 4]，第i张图像所有gt点生成的所有提案
+        # proposal_list[i]：张量，形状[M*num_gt[i], 5]，第i张图像所有gt点生成的所有提案
         boxes, filtered_boxes, filtered_scores = multi_apply(self.merge_box_single, cls_scores, ins_scores,
                                                              dynamic_weight_list,
                                                              gt_bboxes,
@@ -480,16 +503,22 @@ class P2BFoVHead(StandardRoIHead):
 
 
 
-        # - boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
-        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 4]，球面中心加水平垂直视场角度，保留得分高的k个提案用作后续生成精细提案
+        # - boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，作为下一个阶段的伪gt框
+        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 5]，球面中心加水平垂直视场角度加角度，保留得分高的k个提案用作后续生成精细提案
         # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k]   
         
-        
         #为了计算球面IoU，需要将gt_bfov转换为gt_bboxes的格式，这里的box其实是bfov格式
-        #将box拼接起来，形状[sum(num_gt[i]), 4]
+        #将box拼接起来，形状[sum(num_gt[i]), 5]
         pseudo_boxes = torch.cat(boxes).detach()
-        # gt_bfov是长度为N的列表，每个元素形状为[num_gt[i], 4]，球面中心加水平垂直视场角度，真实球面视场
+        # gt_bfov是长度为N的列表，每个元素形状为[num_gt[i], 4或5]，球面中心加水平垂直视场角度，真实球面视场
         temp_gt_bfov = torch.cat(gt_bfov)
+        
+        # 如果gt_bfov是4维，添加第五个维度（角度）设置为0，确保与pseudo_boxes维度一致
+        if temp_gt_bfov.shape[-1] == 4 and pseudo_boxes.shape[-1] == 5:
+            num_gt = temp_gt_bfov.shape[0]
+            angles = torch.zeros(num_gt, 1, device=temp_gt_bfov.device)
+            temp_gt_bfov = torch.cat([temp_gt_bfov, angles], dim=1)
+        
         # iou1的形状是[sum(num_gt[i]),]，每个元素都是0-1之间的浮点数，代表球面IoU
         iou1 = self.calculate_spherical_iou_gpu(pseudo_boxes, temp_gt_bfov)
         
@@ -518,9 +547,9 @@ class P2BFoVHead(StandardRoIHead):
         #这里的pseudo_boxes是张量
         pseudo_boxes = torch.split(pseudo_boxes, batch_gt)
         #返回的数据信息
-        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
+        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，作为下一个阶段的伪gt框
         # - mean_ious ：列表，长度为4，每个元素为一个尺度的球面IoU
-        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 4]，球面中心加水平垂直视场角度，保留得分高的k个提案用作后续生成精细提案
+        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 5]，球面中心加水平垂直视场角度加角度，保留得分高的k个提案用作后续生成精细提案
         # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k]   
         return list(pseudo_boxes), mean_ious, list(filtered_boxes), list(filtered_scores), dynamic_weight.detach()
 
@@ -562,104 +591,36 @@ class P2BFoVHead(StandardRoIHead):
         return constrained_centers
 
 
-    # def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
-    #     """
-    #     三维笛卡尔加权平均算法
-        
-    #     Args:
-    #         points: 3D点，形状为 [batch_size, num_points, 3]
-    #         weights: 权重，形状为 [batch_size, num_points]
-    #         max_iter: 最大迭代次数（兼容旧接口，不再使用）
-    #         tol: 收敛容忍度（兼容旧接口，不再使用）
-            
-    #     Returns:
-    #         weighted_points: 笛卡尔加权平均点，形状为 [batch_size, 3]
-    #     """
-    #     batch_size, num_points, _ = points.shape
-        
-    #     # 直接进行三维笛卡尔加权平均
-    #     # 将权重扩展为 [batch_size, num_points, 1] 以便与 points 相乘
-    #     weights_expanded = weights.unsqueeze(2)
-        
-    #     # 计算加权和
-    #     weighted_sum = torch.sum(weights_expanded * points, dim=1)  # [batch_size, 3]
-        
-    #     # 计算权重总和（用于归一化）
-    #     weights_sum = weights.sum(dim=1, keepdim=True)  # [batch_size, 1]
-        
-    #     # 进行归一化，避免除以零
-    #     weighted_average = weighted_sum / (weights_sum + tol)  # [batch_size, 3]
-        
-    #     return weighted_average
     def spherical_weighted_average(self, points, weights, max_iter=100, tol=1e-8):
         """
-        球面加权平均算法（A1线性收敛）
+        三维笛卡尔加权平均算法
         
         Args:
-            points: 单位球面上的点，形状为 [batch_size, num_points, 3]
+            points: 3D点，形状为 [batch_size, num_points, 3]
             weights: 权重，形状为 [batch_size, num_points]
-            max_iter: 最大迭代次数
-            tol: 收敛容忍度
+            max_iter: 最大迭代次数（兼容旧接口，不再使用）
+            tol: 收敛容忍度（兼容旧接口，不再使用）
             
         Returns:
-            weighted_points: 球面加权平均点，形状为 [batch_size, 3]
+            weighted_points: 笛卡尔加权平均点，形状为 [batch_size, 3]
         """
         batch_size, num_points, _ = points.shape
         
-        # 初始化：欧氏加权归一化投影到球面
-        weighted_euclidean = torch.bmm(weights.unsqueeze(1), points).squeeze(1)  # [batch_size, 3]
-        q = weighted_euclidean / (torch.norm(weighted_euclidean, dim=1, keepdim=True) + tol)
+        # 直接进行三维笛卡尔加权平均
+        # 将权重扩展为 [batch_size, num_points, 1] 以便与 points 相乘
+        weights_expanded = weights.unsqueeze(2)
         
-        for iter_idx in range(max_iter):
-            # 计算每个点到当前估计点的切平面向量
-            u_total = torch.zeros_like(q)  # [batch_size, 3]
-            
-            for i in range(batch_size):
-                q_i = q[i]  # [3]
-                points_i = points[i]  # [num_points, 3]
-                weights_i = weights[i]  # [num_points]
-                
-                # 计算球面距离和切平面向量
-                dots = torch.matmul(points_i, q_i)  # [num_points]
-                dots = torch.clamp(dots, -1.0 + tol, 1.0 - tol)  # 避免数值问题
-                
-                distances = torch.arccos(dots)  # [num_points]
-                
-                # 避免除以零
-                sin_distances = torch.sin(distances)
-                valid_mask = sin_distances > tol
-                
-                # 对数映射：将点映射到切平面
-                tangent_vectors = torch.zeros_like(points_i)
-                for j in range(num_points):
-                    if valid_mask[j]:
-                        # 切平面向量 = (p - (p·q)q) * (distance / sin(distance))
-                        proj = dots[j] * q_i
-                        tangent_vector = (points_i[j] - proj) * (distances[j] / sin_distances[j])
-                        tangent_vectors[j] = tangent_vector
-                    else:
-                        # 距离很小，近似为切平面原点
-                        tangent_vectors[j] = torch.zeros_like(q_i)
-                
-                # 切平面加权平均
-                u_i = torch.sum(weights_i.unsqueeze(1) * tangent_vectors, dim=0)  # [3]
-                u_total[i] = u_i
-            
-            # 检查收敛
-            u_norm = torch.norm(u_total, dim=1)
-            if torch.all(u_norm < tol):
-                break
-            
-            # 指数映射：更新估计点
-            for i in range(batch_size):
-                u_i = u_total[i]
-                r = torch.norm(u_i)
-                if r > tol:
-                    # exp_q(u) = q * cos(r) + (u/r) * sin(r)
-                    q[i] = q[i] * torch.cos(r) + (u_i / r) * torch.sin(r)
-                # 如果r很小，q保持不变
+        # 计算加权和
+        weighted_sum = torch.sum(weights_expanded * points, dim=1)  # [batch_size, 3]
         
-        return q
+        # 计算权重总和（用于归一化）
+        weights_sum = weights.sum(dim=1, keepdim=True)  # [batch_size, 1]
+        
+        # 进行归一化，避免除以零
+        weighted_average = weighted_sum / (weights_sum + tol)  # [batch_size, 3]
+        
+        return weighted_average
+
 
 
     def simple_test(self,
@@ -718,8 +679,15 @@ class P2BFoVHead(StandardRoIHead):
 
         # 将掩码转换为边界框列表
         bboxes_list = proposals
+        
+        # 自动检测边界框维度（支持4维或5维BFoV）
+        if len(bboxes_list) > 0 and bboxes_list[0].ndim > 0:
+            box_version = bboxes_list[0].shape[-1]
+        else:
+            box_version = 5  # 默认使用5维
+        
         # 获取ROI特征
-        rois = bbox2roi(bboxes_list)
+        rois = bbox2roi(bboxes_list, box_version=box_version)
 
         bbox_results = self._bbox_forward_single(x, rois, None, stage)
         
@@ -752,9 +720,9 @@ class P2BFoVHead(StandardRoIHead):
             *bbox_results['cls_score'].shape[:2], 1)
         # def merge_box(self, bbox_results, proposals_list, proposals_valid_list, gt_labels, gt_bboxes, gt_bfov, img_metas, stage):
         #返回的数据信息
-        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，作为下一个阶段的伪gt框
+        # - pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，作为下一个阶段的伪gt框
         # - mean_ious ：列表，长度为4，每个元素为一个尺度的球面IoU
-        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 4]，球面中心加水平垂直视场角度，保留得分高的k个提案用作后续生成精细提案
+        # - filtered_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], k, 5]，球面中心加水平垂直视场角度加角度，保留得分高的k个提案用作后续生成精细提案
         # - filtered_scores ：列表，长度为N，每个元素形状为 [num_gt[i], k]   
         pseudo_boxes, mean_ious, filtered_boxes, filtered_scores, dynamic_weight = self.merge_box(bbox_results,
                                                                                                     proposals,
@@ -776,7 +744,7 @@ class P2BFoVHead(StandardRoIHead):
         return det_bboxes, det_labels, pseudo_boxes_out  
 
     def pseudobox_to_result(self, pseudo_boxes, gt_labels, dynamic_weight, gt_anns_id, scale_factors, rescale):
-        # pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 4]，球面中心加水平垂直视场角度，
+        # pseudo_boxes ：列表，长度为N，每个元素形状为 [num_gt[i], 5]，球面中心加水平垂直视场角度加角度，
         # gt_labels ：列表，长度为N，每个元素形状为 [num_gt[i]]，每个元素是gt的类别标签
         det_bboxes = []
         det_labels = []
@@ -792,6 +760,9 @@ class P2BFoVHead(StandardRoIHead):
             #         boxes.size(-1) // 4)
             #     boxes /= scale_factor
 
+            # 去掉角度维度，只保留前4个维度 [theta, phi, fov_x, fov_y]
+            boxes = boxes[:, :4]
+            
             boxes = torch.cat([boxes, dynamic_weight[i].sum(dim=1, keepdim=True)], dim=1)
             gt_anns_id_single = gt_anns_id[i]
             boxes = torch.cat([boxes, gt_anns_id_single.unsqueeze(1)], dim=1)
@@ -805,15 +776,17 @@ class P2BFoVHead(StandardRoIHead):
     def calculate_spherical_iou_gpu(self, pseudo_boxes, gt_bfov, device=None, sph_calculator=None):
         """
         计算球面矩形 IoU，使用 sph2pob_efficient_iou 方法
-        支持无角度的球面矩形：[theta, phi, fov_x, fov_y]
+        支持4维或5维的球面矩形：
+        - 4维：[theta, phi, fov_x, fov_y]
+        - 5维：[theta, phi, fov_x, fov_y, angle]
         
         Args:
-            pseudo_boxes: 伪框，格式：列表，长度为N，每个元素形状为 [M_i, 4]
+            pseudo_boxes: 伪框，格式：列表，长度为N，每个元素形状为 [M_i, 4或5]
                 
-                - 格式：[theta, phi, fov_x, fov_y]
+                - 格式：[theta, phi, fov_x, fov_y] 或 [theta, phi, fov_x, fov_y, angle]
                 - 类型：torch.Tensor 或 numpy.ndarray
-            gt_bfov: 真实框，格式：列表，长度为N，每个元素形状为 [num_gt[i], 4]
-                - 格式：[theta, phi, fov_x, fov_y]
+            gt_bfov: 真实框，格式：列表，长度为N，每个元素形状为 [num_gt[i], 4或5]
+                - 格式：[theta, phi, fov_x, fov_y] 或 [theta, phi, fov_x, fov_y, angle]
                 - 类型：torch.Tensor 或 numpy.ndarray
             device: 输出设备，默认与 pseudo_boxes 相同
             sph_calculator: 未使用，为保持接口一致而保留

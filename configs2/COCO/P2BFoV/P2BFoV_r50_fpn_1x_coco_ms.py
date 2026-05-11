@@ -46,7 +46,7 @@ model = dict(
         type='P2BFoVHead',  # 类型为P2BFoVHead
         num_stages=num_stages,  # 阶段数，使用前面定义的2
         # top_k=7,  # 顶部k值选择
-        top_k=4,  # 顶部k值选择
+        top_k=6,  # 顶部k值选择
         with_atten=False,  # 不使用注意力机制
         
         # ROI特征提取器配置
@@ -101,7 +101,7 @@ model = dict(
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
             base_scales=[6, 18, 36, 72, 108, 144],  # 基础尺fov度
-            base_ratios=[  1/2,1 / 1.5, 1.0, 1.5,2],  # 基础长宽比
+            base_ratios=[  1/2,1/1.5, 1.0, 1.5,2],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
             gen_num_neg=0),  # 生成负样本数量
@@ -153,7 +153,7 @@ train_pipeline = [
     dict(type='LoadAnnotations', with_bbox=True),  # 加载标注，包含边界框
     dict(type='Resize',  # 调整图像大小
         #  img_scale=[(2000, 480), (2000, 576), (2000, 688), (2000, 864), (2000, 1000), (2000, 1200)],  # 多尺度
-         img_scale=[(1024, 512)],  # 图像尺度不能动，如果改变的话会直接导致经纬度坐标失真
+         img_scale=[(1024, 512)],  # 图像尺度不能随便动，如果改变的话会直接导致经纬度坐标失真
          multiscale_mode='value',  # 多尺度模式为指定值
          keep_ratio=True),  # 保持长宽比
     # 随机翻转，调试模式关闭
@@ -191,8 +191,8 @@ test_pipeline = [
 
 # 数据加载配置
 data = dict(
-    samples_per_gpu=1,  # 每个GPU的样本数
-    workers_per_gpu=4,  # 每个GPU的工作进程数
+    samples_per_gpu=2,  # 每个GPU的样本数
+    workers_per_gpu=8,  # 每个GPU的工作进程数
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置
         type=dataset_type,  # 数据集类型
@@ -228,10 +228,10 @@ lr_config = dict(
     warmup='linear',  # 线性预热
     warmup_iters=500,  # 预热迭代次数
     warmup_ratio=0.001,  # 预热学习率比例
-    step=[9, 14])  # 在第8和15个epoch调整学习率
+    step=[8, 11])  # 在第8和15个epoch调整学习率
 
 # 运行器配置
-runner = dict(type='EpochBasedRunner', max_epochs=16)  # 基于epoch的运行器，最大25个epoch
+runner = dict(type='EpochBasedRunner', max_epochs=12)  # 基于epoch的运行器，最大25个epoch
 work_dir='work_dir/P2BFoV/'  # 工作目录
 
 
@@ -241,9 +241,9 @@ work_dir='work_dir/P2BFoV/'  # 工作目录
 evaluation = dict(
     interval=20,  # 评估间隔（每20个epoch）
     # metric='bfov',  # 评估指标为bfov，这里之所以还用bbox是因为保留整体逻辑联通
-    # 但是背后的处理层面都改成了球面iou计算逻辑
+    # 但是背后的处理层面都改成了球面计算逻辑
     metric='bbox',  # 评估指标为边界框
     save_result_file=work_dir + '_' + str(test_scale) + '_latest_result.json',  # 结果保存文件
     do_first_eval=False,  # 不进行首次评估
-    do_final_eval=False,  # 进行最终评估
+    do_final_eval=True,  # 进行最终评估
 )

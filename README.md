@@ -39,7 +39,7 @@ python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-d
  for g in 0 1 2 3; do echo -e "\n===== GPU $g 占用信息 ====="; nvidia-smi -i $g | awk '/^|    [0-9]+ +N\/A +N\/A/ && /python/ {pid=$5; mem=$12; cmd="ps -o user= -p " pid; cmd | getline user; close(cmd); print "用户: " user "\nPID: " pid "\n显存占用: " mem "\n---"}'; done
 
 # 最终环境
-#兼容mmcv1.6以上，目前装的是2.3.2
+#兼容mmcv1.6以上，目前装的是2.3.2,
 conda create -n pointobb python=3.7 -y
 conda activate pointobb
 # install pytorch
@@ -62,18 +62,28 @@ conda install scikit-image  # or pip install scikit-image
 # 正式训练
 ```shell script
 
+
+
+<!-- 数据预处理 -->
+
+
+
+
 <!-- 单卡训练 -->
-python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 3
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0 
+
+
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 3 --resume-from work_dir/P2BFoV/epoch_3.pth
 
 <!-- 两张卡分布式训练 -->
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 
 
-CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
+CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2
 
 <!-- 两张卡接着中断前训练 -->
 CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
     --work-dir work_dir/P2BFoV/ \
-    --resume-from work_dir/P2BFoV/epoch_1.pth
+    --resume-from work_dir/P2BFoV/epoch_5.pth
 
 <!-- 指定gpu-id的分布式训练 -->
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 
@@ -88,9 +98,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFo
     runner.max_epochs=0 evaluation.interval=1
 
 <!-- # 验证方法多卡验证 -->
-CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 4 \
     --work-dir work_dir/P2BFoV/ \
-    --cfg-options "load_from=work_dir/P2BFoV/epoch_6.pth" "runner.max_epochs=0" "evaluation.interval=1"
+    --cfg-options "load_from=work_dir/xiaorong/1*13D_merge/epoch_12.pth" "runner.max_epochs=0" "evaluation.interval=1"
 
 
 
