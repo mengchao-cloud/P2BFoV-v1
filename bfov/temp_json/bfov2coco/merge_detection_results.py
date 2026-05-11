@@ -2,9 +2,9 @@ import json
 import os
 import numpy as np
 # 设置文件路径
-detection_file = './bfov/temp_json/result_json/head7-1-16epoch/_512_latest_result.json'
+detection_file = 'bfov/temp_json/merge_result/lunwen/p2bfovinfer.json'
 coco_file = './bfov/temp_json/test_coco.json'
-output_file = './bfov/temp_json/merge_result/merged_coco_results.json'
+output_file = './bfov/temp_json/merge_result/xiaorong/merged_p2bfovinfer_coco_results.json'
 
 def merge_detection_results(detection_file, coco_file, output_file):
     """

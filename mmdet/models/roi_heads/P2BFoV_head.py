@@ -182,7 +182,7 @@ class P2BFoVHead(StandardRoIHead):
         rois = bbox2roi(bboxes_list)
 
         # 🔑 关键修改：调用_bbox_forward_single函数（新功能）
-        bbox_results = self._bbox_forward_single(x, rois, gt_points, stage)
+        bbox_results = self._bbox_forward_single(x, rois, gt_points, stage,img_metas)
 
 
         #获取批次中真实目标的总数num_gt
@@ -206,7 +206,7 @@ class P2BFoVHead(StandardRoIHead):
 
             neg_rois = bbox2roi(neg_bboxes_list)
 
-            neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage)
+            neg_bbox_results = self._bbox_forward_single(x, neg_rois, None, stage,img_metas)
 
             neg_cls_scores = neg_bbox_results['cls_score']
             neg_weights = torch.cat(neg_weight_list)
@@ -316,7 +316,7 @@ class P2BFoVHead(StandardRoIHead):
 
 
 
-    def _bbox_forward_single(self, x, rois, gt_points, stage):
+    def _bbox_forward_single(self, x, rois, gt_points, stage, img_metas):
         """
         不区分左右的Box head forward函数
         
@@ -331,9 +331,14 @@ class P2BFoVHead(StandardRoIHead):
         Returns:
             bbox_results: 包含分类得分、实例得分、回归框等的字典
         """
-        # 提取ROI特征
+        # 图像高和宽参数
+        h, w, c = img_metas[0]['img_shape']
+        # # 打印图像尺寸信息
+        # print(f"图像尺寸: h={h}, w={w}, c={c}")
+
+        # 提取ROI特征，传递图像尺寸参数
         bbox_feats = self.bbox_roi_extractor(
-            x[:self.bbox_roi_extractor.num_inputs], rois)
+            x[:self.bbox_roi_extractor.num_inputs], rois, img_h=h, img_w=w)
         if self.with_shared_head:
             bbox_feats = self.shared_head(bbox_feats)
         
@@ -653,7 +658,7 @@ class P2BFoVHead(StandardRoIHead):
         # 获取ROI特征
         rois = bbox2roi(bboxes_list)
 
-        bbox_results = self._bbox_forward_single(x, rois, None, stage)
+        bbox_results = self._bbox_forward_single(x, rois, None, stage,img_metas)
         
         # 在测试阶段，我们需要将cls_score和ins_score重塑为 [num_gt, M, num_classes] 形状
         # 首先计算每个图像的gt数量

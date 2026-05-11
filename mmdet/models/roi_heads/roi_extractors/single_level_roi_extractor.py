@@ -290,8 +290,10 @@ class SingleRoIExtractor(BaseRoIExtractor):
     
 
     @force_fp32(apply_to=('feats', ), out_fp16=True)
-    def forward(self, feats, rois, roi_scale_factor=None):
+    def forward(self, feats, rois, roi_scale_factor=None, img_h=None, img_w=None):
         # rois: 张量，形状为[sum(num_gt[i]*M), 5]，sum求和的是一个批次所有图像的边界框数量
+        # img_h: 图像高度（可选，用于ERP坐标计算）
+        # img_w: 图像宽度（可选，用于ERP坐标计算）
         """Forward function."""
         out_size = self.roi_layers[0].output_size
         num_levels = len(feats)
@@ -319,7 +321,10 @@ class SingleRoIExtractor(BaseRoIExtractor):
             # 注意：这里输入的是BFOV参数，格式为[N, 5] = [batch_index, lon, lat, fov_u, fov_v]
             # 需要提取BFOV参数部分（去掉batch_index）
             # bfov_roi_to_14x14_erp返回的是ERP图像上的像素坐标 [N, 14, 14, 2]
-            roi_points = self.bfov_roi_to_14x14_erp(rois[:, 1:])
+            # 使用传入的图像尺寸，默认为1024x512
+            erp_width = img_w if img_w is not None else 1024
+            erp_height = img_h if img_h is not None else 512
+            roi_points = self.bfov_roi_to_14x14_erp(rois[:, 1:], erp_width=erp_width, erp_height=erp_height)
             
             # Step 2: Convert to feature map coordinates
             # 将ERP像素坐标转换为特征图坐标（考虑特征图步长）

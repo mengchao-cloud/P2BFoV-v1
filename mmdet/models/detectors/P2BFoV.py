@@ -671,6 +671,8 @@ class P2BFoV(TwoStageDetector):
                                                                             generate_proposals,
                                                                             img_meta=img_metas)
             
+            
+            
             roi_losses, pseudo_boxes, dynamic_weight = self.roi_head.forward_train(stage, x, img_metas,
                                                                                    pseudo_boxes,
                                                                                    generate_proposals,

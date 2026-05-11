@@ -63,7 +63,7 @@ conda install scikit-image  # or pip install scikit-image
 ```shell script
 
 <!-- 单卡训练 -->
-python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 0
+python tools/train.py configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py --work-dir work_dir/P2BFoV/ --gpu-ids 1
 
 <!-- 两张卡分布式训练 -->
 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r50_fpn_1x_coco_ms.py 2 
@@ -98,8 +98,8 @@ CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh configs2/COCO/P2BFoV/P2BFoV_r5
 python bfov/temp_json/bfov2coco/merge_detection_results.py 
 <!-- # 可视化结果 -->
 python bfov/temp_json/bfov2coco/bfov_batch_visualization.py 
-
-
+<!-- # 指标评估 -->
+python bfov/calculate_bfov_metrics.py
 
 
  <!-- 只杀死训练相关的进程 -->
@@ -119,7 +119,7 @@ python bfov/temp_json/bfov2coco/bfov_batch_visualization.py
     ps -u mengchao -u
 ```
 
-
+<!-- meta.get('img_shape', 'N/A' -->
 
 
 

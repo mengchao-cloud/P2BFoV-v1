@@ -99,8 +99,8 @@ model = dict(
         base_proposal=dict(  # 基础 proposal 配置
             # base_scales=[6, 12, 24, 48, 92, 180],  # 基础尺fov度
             # base_ratios=[1 / 3, 1 / 2, 1 / 1.5, 1.0, 1.5, 2.0, 3.0],  # 基础长宽比
-            base_scales=[12,14],  # 基础尺fov度
-            base_ratios=[ 1 / 1.5, 1.5],  # 基础长宽比
+            base_scales=[6, 18,36,72,144],  # 基础尺fov度
+            base_ratios=[ 1.5,1.2, 1, 0.8,1/1.5],  # 基础长宽比
             shake_ratio=None,  # 不使用抖动比例
             cut_mode='symmetry',  # 裁剪模式为对称
             gen_num_neg=0),  # 生成负样本数量
@@ -109,7 +109,7 @@ model = dict(
             gen_proposal_mode='fix_gen',  # proposal生成模式
             cut_mode=None,  # 不使用裁剪模式
             shake_ratio=[0.1],  # 抖动比例
-            base_ratios=[ 1.2, 0.8],  # 基础长宽比
+            base_ratios=[1.5,1.2, 1, 0.8,1/1.5],  # 基础长宽比
             # base_ratios=[1, 1.2,0.8],  # 基础长宽比
             iou_thr=0.,  # IOU阈值
             gen_num_neg=500,  # 生成负样本数量
@@ -138,8 +138,8 @@ model = dict(
 # 数据集设置每个GPU的样本数
 dataset_type = 'CocoFmtDataset'  # 数据集类型为COCO格式数据集
 # data_root = '360indoor/'  # 数据根目录
-data_root = '../360indoor-short/'
-
+# data_root = '../360indoor-short/'
+data_root = '../360indoor/'
 # 图像归一化配置
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53],  # RGB通道均值
@@ -152,7 +152,7 @@ train_pipeline = [
     dict(type='LoadAnnotations', with_bbox=True),  # 加载标注，包含边界框
     dict(type='Resize',  # 调整图像大小
         #  img_scale=[(2000, 480), (2000, 576), (2000, 688), (2000, 864), (2000, 1000), (2000, 1200)],  # 多尺度
-         img_scale=[(1024, 512)],  # 图像尺度不能动，如果改变的话会直接导致经纬度坐标失真
+         img_scale=[(1024, 512),(896, 448),(640, 320),(512, 256)],  # 图像尺度不能动，如果改变的话会直接导致经纬度坐标失真
          multiscale_mode='value',  # 多尺度模式为指定值
          keep_ratio=True),  # 保持长宽比
     # 随机翻转，调试模式关闭
@@ -190,27 +190,27 @@ test_pipeline = [
 
 # 数据加载配置
 data = dict(
-    samples_per_gpu=3,  # 每个GPU的样本数
+    samples_per_gpu=1,  # 每个GPU的样本数
     workers_per_gpu=4,  # 每个GPU的工作进程数
     shuffle=False if debug else None,  # 调试模式不打乱数据顺序
     train=dict(  # 训练集配置
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/train_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/train_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=train_pipeline,  # 使用训练流水线
     ),
     val=dict(  # 验证集配置
         samples_per_gpu=1,  # 每个GPU的样本数
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/test_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline,  # 使用测试流水线
         test_mode=False,  # 不是测试模式
     ),
     test=dict(  # 测试集配置
         type=dataset_type,  # 数据集类型
-        ann_file=data_root + "ann/test_coco_short.json",  # 标注文件路径
-        img_prefix=data_root + 'images_short/',  # 图像前缀路径
+        ann_file=data_root + "ann/test_coco.json",  # 标注文件路径
+        img_prefix=data_root + 'images/',  # 图像前缀路径
         pipeline=test_pipeline))  # 使用测试流水线
 
 # 检查配置，当出现NaN时不停止

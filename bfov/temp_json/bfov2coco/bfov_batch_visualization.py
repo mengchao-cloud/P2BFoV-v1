@@ -7,7 +7,7 @@ import torch
 from PANDORA.PRDA.lib.ReuseGPUImageRecorder import ReuseGPUImageRecorder
 
 # 输入输出配置
-MERGED_COCO_FILE = './bfov/temp_json/merge_result/merged_coco_results.json'
+MERGED_COCO_FILE = './bfov/temp_json/merge_result/lunwen/test_coco.json'
 # MERGED_COCO_FILE = '../360indoor/ann/test_coco.json'
 IMAGE_DIR = '../360indoor/images/'
 OUTPUT_DIR = './bfov/temp_json/result_image/'
@@ -92,11 +92,7 @@ def visualize_bfov_on_image(img, bfov_params, score=None, category_id=None):
         center_py = int((np.pi/2 - center_y_rad) / np.pi * ERP_HEIGHT)
         cv2.circle(img, (center_px, center_py), 3, color, -1)
         
-        # 绘制分数和类别信息
-        if score is not None:
-            text = f'Class {category_id}, Score: {score:.3f}'
-            cv2.putText(img, text, (center_px + 10, center_py - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        # 不绘制分数和类别信息
     except Exception as e:
         # 处理异常，记录错误但不中断程序
         print(f"可视化BFOV时发生错误: {e}")
@@ -131,16 +127,12 @@ def visualize_bfov_on_image(img, bfov_params, score=None, category_id=None):
             5: (0, 255, 255)   # 青色
         }
         color = colors.get(category_id % len(colors), (128, 128, 128))  # 默认灰色
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)  # 线宽从 2 改为 1
         
         # 绘制中心点
         cv2.circle(img, (center_px, center_py), 3, color, -1)
         
-        # 绘制分数和类别信息
-        if score is not None:
-            text = f'Class {category_id}, Score: {score:.3f}'
-            cv2.putText(img, text, (x1 + 10, y1 - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        # 不绘制分数和类别信息
     
     return img
 
