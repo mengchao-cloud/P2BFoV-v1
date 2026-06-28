@@ -1,0 +1,26 @@
+# Local datasets
+data/
+
+# Experiment outputs
+work_dir/
+outputs/
+results/
+
+# Model checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# Large prediction files
+*.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
