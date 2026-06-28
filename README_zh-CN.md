@@ -30,7 +30,7 @@ P<sup>2</sup>DNet 是一个面向 ERP 全景图像的点监督物体检测框架
 - Top-\(k\) 球面加权提案聚合。
 - 四方向球面抖动与多尺度提案精修。
 - 尺度旋转得分一致性损失（SRC Loss）。
-- 生成的伪 BFoV 可用于训练 Sph-CenterNet、SSD、FCOS 和 Faster R-CNN 等全景检测器。
+- 生成的伪 BFoV 可用于训练 Sph-CenterNet 等全景检测器。
 
 ## 方法框架
 
@@ -77,7 +77,6 @@ P<sup>2</sup>DNet 是一个面向 ERP 全景图像的点监督物体检测框架
 | 少量人工 BFoV + Faster R-CNN | 5.19 | 13.00 |
 | P<sup>2</sup>DNet + Faster R-CNN | 6.61 | 16.42 |
 
-> 以上数据对应当前论文稿件。发布最终权重和评估协议时，可同步更新结果。
 
 ## 环境安装
 
