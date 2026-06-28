@@ -48,11 +48,67 @@ P<sup>2</sup>DNet 是一个面向 ERP 全景图像的点监督物体检测框架
 
 ## 可视化结果
 
-<p align="center">
-  <img src="assets/qualitative_results.jpg" width="100%" alt="伪 BFoV 定性对比">
-</p>
+<table align="center">
+  <thead>
+    <tr>
+      <th align="center">Quasi-GT Point</th>
+      <th align="center">GT BFoV</th>
+      <th align="center">P<sup>2</sup>DNet (Ours)</th>
+      <th align="center">P2BNet-BFoV</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center">
+        <img src="assets/point/result_7l8xM.jpg" width="100%" alt="Quasi-GT Point result 7l8xM">
+      </td>
+      <td align="center">
+        <img src="assets/gt/result_7l8xM.jpg" width="100%" alt="GT BFoV result 7l8xM">
+      </td>
+      <td align="center">
+        <img src="assets/p2bfov/result_7l8xM.jpg" width="100%" alt="P2DNet result 7l8xM">
+      </td>
+      <td align="center">
+        <img src="assets/p2bnet/result_7l8xM.jpg" width="100%" alt="P2BNet-BFoV result 7l8xM">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/point/result_7l8ds.jpg" width="100%" alt="Quasi-GT Point result 7l8ds">
+      </td>
+      <td align="center">
+        <img src="assets/gt/result_7l8ds.jpg" width="100%" alt="GT BFoV result 7l8ds">
+      </td>
+      <td align="center">
+        <img src="assets/p2bfov/result_7l8ds.jpg" width="100%" alt="P2DNet result 7l8ds">
+      </td>
+      <td align="center">
+        <img src="assets/p2bnet/result_7l8ds.jpg" width="100%" alt="P2BNet-BFoV result 7l8ds">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/point/result_7lBhd.jpg" width="100%" alt="Quasi-GT Point result 7lBhd">
+      </td>
+      <td align="center">
+        <img src="assets/gt/result_7lBhd.jpg" width="100%" alt="GT BFoV result 7lBhd">
+      </td>
+      <td align="center">
+        <img src="assets/p2bfov/result_7lBhd.jpg" width="100%" alt="P2DNet result 7lBhd">
+      </td>
+      <td align="center">
+        <img src="assets/p2bnet/result_7lBhd.jpg" width="100%" alt="P2BNet-BFoV result 7lBhd">
+      </td>
+    </tr>
+  </tbody>
+</table>
 
-上图依次展示准真值点标注、真实 BFoV、P<sup>2</sup>DNet 生成的伪 BFoV，以及平面点监督方法转换得到的 BFoV 结果。
+<p align="center">
+  <em>
+    准真值点标注、真实 BFoV、P<sup>2</sup>DNet 生成的伪 BFoV，
+    以及平面点监督方法 P2BNet 转换得到的 BFoV 结果对比。
+  </em>
+</p>
 
 ## 主要实验结果
 
@@ -259,7 +315,7 @@ python bfov/calculate_bfov_metrics.py
 ```bibtex
 @misc{meng2026p2dnet,
   title        = {P2DNet: Panoramic Object Detection via Single Point Supervision},
-  author       = {Meng, Chao and Zhao, Qiang and Zhao, Wenting},
+  author       = {Meng, Chao },
   year         = {2026},
   note         = {Manuscript}
 }
