@@ -245,52 +245,12 @@ python bfov/calculate_bfov_metrics.py
 
 运行前需要检查这些脚本中的输入输出路径，确保它们指向当前实验目录。
 
-## 实验复现与文件管理
-
-每次训练完成后，至少保存以下文件：
-
-```text
-work_dir/<experiment_name>/
-├── config.py
-├── train.log
-├── inference.log
-├── checkpoints/
-│   ├── epoch_x.pth
-│   └── latest.pth
-├── predictions/
-│   └── results.json
-├── visualizations/
-└── metrics/
-```
-
-建议在实验名称中加入日期、模型版本和核心改动，例如：
-
-```text
-2026-06-28_head8_spherical_roi
-```
-
 更详细的训练命令和开发记录见：
 
 - [`docs/training_notes.md`](docs/training_notes.md)
 - [`docs/experiment_history.md`](docs/experiment_history.md)
 - [`docs/BFoVlog_original.md`](docs/BFoVlog_original.md)——早期原始开发日志
 
-## 推荐项目结构
-
-```text
-P2DNet/
-├── assets/
-├── bfov/
-├── configs2/
-├── docs/
-├── mmdet/
-├── tools/
-├── work_dir/
-├── README.md
-└── README_zh-CN.md
-```
-
-通常应在 `.gitignore` 中排除 `work_dir/`、权重文件、大型预测文件和本地数据集。
 
 ## 引用
 
@@ -314,4 +274,3 @@ P2DNet/
 代码或实验问题可联系：
 
 - 孟超：`252060202@hdu.edu.cn`
-- 赵强：`qiangzhao@ieee.org`
